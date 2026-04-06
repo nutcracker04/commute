@@ -1,0 +1,50 @@
+name = "commute-leads-worker"
+main = "src/entry.py"
+compatibility_date = "2026-04-03"
+compatibility_flags = ["python_workers"]
+
+# Replace with output of: npx wrangler d1 create commute-leads
+[[d1_databases]]
+binding = "DB"
+database_name = "commute-leads"
+database_id = "e90e91de-20f9-411c-a61a-5ce5e4334620"
+
+[[queues.producers]]
+binding = "LEAD_QUEUE"
+queue = "commute-leads-queue"
+
+[[queues.consumers]]
+queue = "commute-leads-queue"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 5
+
+[vars]
+# Match window after first GET /r/{ref_id} (default 3h); physical_qrs.expires_at
+SCAN_TTL_SECONDS = "10800"
+# LCS fuzzy match tuning
+LCS_MIN_SCORE = "0.35"
+LCS_MIN_GAP = "0.08"
+LCS_RECENCY_TAU_MINUTES = "60"
+LCS_MAX_CANDIDATES = "500"
+FALLBACK_REPLY_TEXT = "We could not link this message to a campaign. Please scan the QR code again or tell us which event you mean."
+# e.g. https://commute-leads-worker.<subdomain>.workers.dev — for GET /integration Polarr hints
+PUBLIC_BASE_URL = "https://commute-leads-worker.harshithsai24.workers.dev"
+# Admin API (see comments at bottom for ADMIN_API_SECRET)
+ADMIN_API_SECRET_HEADER = "X-Admin-Key"
+ADMIN_PROVISION_MAX_COUNT = "500"
+ADMIN_LIST_MAX_LIMIT = "500"
+
+# Optional [vars]: MSG91_WEBHOOK_SECRET_HEADER = "X-Webhook-Secret"
+# Optional [vars]: MSG91_SESSION_SEND_URL = "https://api.msg91.com/api/v5/whatsapp/..."
+#
+# Admin JSON API (POST/GET /api/physical-qrs):
+#   wrangler secret put ADMIN_API_SECRET
+# Optional [vars]: ADMIN_API_SECRET_HEADER, ADMIN_PROVISION_MAX_COUNT, ADMIN_LIST_MAX_LIMIT
+
+# Secrets (wrangler secret put …):
+#   MSG91_AUTH_KEY
+#   MSG91_INTEGRATED_NUMBER
+#   MSG91_WEBHOOK_SECRET   (optional; match MSG91_WEBHOOK_SECRET_HEADER from dashboard)
+#   ADMIN_API_SECRET         (required for /api/physical-qrs)
+#   Local dev: .dev.vars (gitignored)

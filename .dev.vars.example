@@ -1,0 +1,7 @@
+# Copy to `.dev.vars` in this directory for `wrangler dev`.
+# Wrangler loads .dev.vars as Worker secrets (gitignored).
+#
+# Generate a fresh secret (do not reuse committed examples in production):
+#   openssl rand -hex 32
+
+ADMIN_API_SECRET=
