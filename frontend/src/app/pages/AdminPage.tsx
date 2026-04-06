@@ -1,158 +1,271 @@
-import { useState } from 'react';
-import { QrCode, Plus, Download } from 'lucide-react';
-import { QRGenerator } from '../components/QRGenerator';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Plus, RefreshCw, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
+import { QrInventoryCard } from '../components/QrInventoryCard';
+import {
+  createPhysicalQrs,
+  listPhysicalQrs,
+  isAdminApiConfigured,
+  type PhysicalQrItem,
+} from '../lib/adminApi';
 
-interface QRCodeData {
-  id: string;
-  refId: string;
-  whatsappMessage: string;
-  createdAt: Date;
-}
-
-// Auto-generate reference ID
-const generateRefId = (index: number): string => {
-  const timestamp = Date.now();
-  return `QR-${timestamp}-${String(index).padStart(3, '0')}`;
-};
-
-// Auto-generate WhatsApp message
-const generateWhatsAppMessage = (refId: string): string => {
-  return `Thanks for scanning! Your reference ID is ${refId}. We'll be in touch soon.`;
-};
+/** Matches seed in migrations/0001_initial.sql */
+const DEFAULT_EVENT_ID = 'evt_demo';
+const PAGE_SIZE = 12;
+const MAX_BATCH = 100;
 
 export function AdminPage() {
-  const [quantity, setQuantity] = useState<string>('1');
-  const [generatedQRs, setGeneratedQRs] = useState<QRCodeData[]>([]);
+  const configured = isAdminApiConfigured();
+
+  const [tab, setTab] = useState('generate');
+
+  const [eventId, setEventId] = useState(DEFAULT_EVENT_ID);
+  const [quantity, setQuantity] = useState('1');
+  const [recentItems, setRecentItems] = useState<PhysicalQrItem[]>([]);
+  const [generateError, setGenerateError] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
 
-  const handleGenerate = () => {
-    const qty = parseInt(quantity);
-    
-    if (isNaN(qty) || qty < 1 || qty > 100) {
-      alert('Please enter a valid quantity between 1 and 100');
+  const [filterEventId, setFilterEventId] = useState('');
+  const [libraryItems, setLibraryItems] = useState<PhysicalQrItem[]>([]);
+  const [libraryTotal, setLibraryTotal] = useState(0);
+  const [libraryOffset, setLibraryOffset] = useState(0);
+  const [libraryLoading, setLibraryLoading] = useState(false);
+  const [libraryError, setLibraryError] = useState<string | null>(null);
+
+  const loadLibrary = useCallback(async () => {
+    if (!configured) return;
+    setLibraryLoading(true);
+    setLibraryError(null);
+    try {
+      const { items, total } = await listPhysicalQrs({
+        limit: PAGE_SIZE,
+        offset: libraryOffset,
+        event_id: filterEventId.trim() || undefined,
+      });
+      setLibraryItems(items);
+      setLibraryTotal(total);
+    } catch (e) {
+      setLibraryError(e instanceof Error ? e.message : 'Failed to load library');
+      setLibraryItems([]);
+    } finally {
+      setLibraryLoading(false);
+    }
+  }, [configured, libraryOffset, filterEventId]);
+
+  useEffect(() => {
+    if (tab === 'library' && configured) {
+      void loadLibrary();
+    }
+  }, [tab, configured, loadLibrary]);
+
+  const handleGenerate = async () => {
+    if (!configured) return;
+    const qty = parseInt(quantity, 10);
+    if (isNaN(qty) || qty < 1 || qty > MAX_BATCH) {
+      setGenerateError(`Enter a quantity between 1 and ${MAX_BATCH}`);
+      return;
+    }
+    const ev = eventId.trim();
+    if (!ev) {
+      setGenerateError('Event ID is required');
       return;
     }
 
+    setGenerateError(null);
     setIsGenerating(true);
-
-    // Generate QR codes with auto-generated ref IDs and messages
-    const newQRs: QRCodeData[] = [];
-    for (let i = 0; i < qty; i++) {
-      const refId = generateRefId(i + 1);
-      const whatsappMessage = generateWhatsAppMessage(refId);
-      
-      newQRs.push({
-        id: `qr-${Date.now()}-${i}`,
-        refId,
-        whatsappMessage,
-        createdAt: new Date(),
+    try {
+      const { items } = await createPhysicalQrs({
+        event_id: ev,
+        count: qty,
       });
+      setRecentItems(items);
+      setQuantity('1');
+      if (tab === 'library') {
+        await loadLibrary();
+      }
+    } catch (e) {
+      setGenerateError(e instanceof Error ? e.message : 'Generation failed');
+    } finally {
+      setIsGenerating(false);
     }
-
-    setGeneratedQRs([...newQRs, ...generatedQRs]);
-    setQuantity('1');
-    setIsGenerating(false);
   };
 
-  const downloadAllQRs = () => {
-    // This would trigger download of all QR codes
-    alert('Downloading all QR codes... (Feature to be implemented)');
-  };
+  const libraryEnd = Math.min(libraryOffset + libraryItems.length, libraryTotal);
+  const canPrev = libraryOffset > 0;
+  const canNext = libraryOffset + PAGE_SIZE < libraryTotal;
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="mb-8">
-          <div className="flex items-center gap-3 mb-2">
-            <QrCode className="w-8 h-8 text-purple-600" />
-            <h1 className="text-gray-900">QR Code Admin Panel</h1>
-          </div>
-          <p className="text-gray-600">
-            Generate QR codes with auto-generated reference IDs and WhatsApp messages
-          </p>
-        </div>
+    <div className="h-full min-h-0 overflow-auto bg-gray-50">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 pb-10">
+        <Tabs value={tab} onValueChange={setTab} className="w-full gap-4">
+          <TabsList className="grid h-auto w-full grid-cols-2 rounded-xl bg-gray-100 p-1 sm:inline-flex sm:w-auto">
+            <TabsTrigger value="generate" className="rounded-lg">
+              Generate
+            </TabsTrigger>
+            <TabsTrigger value="library" className="rounded-lg">
+              QR Library
+            </TabsTrigger>
+          </TabsList>
 
-        {/* Generation Form */}
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
-          <h2 className="font-semibold text-gray-900 mb-4">Generate QR Codes</h2>
-          
-          <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-end">
-            <div className="flex-1 max-w-xs">
-              <label htmlFor="quantity" className="block text-sm font-medium text-gray-700 mb-1">
-                Quantity <span className="text-red-500">*</span>
-              </label>
-              <input
-                type="number"
-                id="quantity"
-                min="1"
-                max="100"
-                placeholder="Enter quantity"
-                value={quantity}
-                onChange={(e) => setQuantity(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-              />
-              <p className="text-xs text-gray-500 mt-1">Maximum 100 QR codes per batch</p>
+          <TabsContent value="generate" className="mt-4 space-y-6 outline-none">
+            <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm sm:p-6">
+              <h2 className="text-base font-semibold text-gray-900">Provision QR codes</h2>
+              <p className="mt-1 text-sm text-gray-600">
+                Creates rows in inventory and returns printable QR images (encode the redirect URL).
+              </p>
+
+              <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 sm:max-w-2xl">
+                <div>
+                  <label htmlFor="admin-event-id" className="mb-1 block text-xs font-medium text-gray-700">
+                    Event ID <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    id="admin-event-id"
+                    type="text"
+                    value={eventId}
+                    onChange={(e) => setEventId(e.target.value)}
+                    disabled={!configured}
+                    className="w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-sm focus:border-transparent focus:ring-2 focus:ring-purple-500 disabled:bg-gray-100"
+                    placeholder="evt_demo"
+                  />
+                </div>
+                <div>
+                  <label htmlFor="admin-qty" className="mb-1 block text-xs font-medium text-gray-700">
+                    Quantity <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    id="admin-qty"
+                    type="number"
+                    min={1}
+                    max={MAX_BATCH}
+                    value={quantity}
+                    onChange={(e) => setQuantity(e.target.value)}
+                    disabled={!configured}
+                    className="w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-sm focus:border-transparent focus:ring-2 focus:ring-purple-500 disabled:bg-gray-100"
+                  />
+                  <p className="mt-0.5 text-[11px] text-gray-500">Up to {MAX_BATCH} per request (worker may allow more)</p>
+                </div>
+              </div>
+
+              {generateError && (
+                <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+                  {generateError}
+                </div>
+              )}
+
+              <div className="mt-4">
+                <button
+                  type="button"
+                  onClick={() => void handleGenerate()}
+                  disabled={!configured || isGenerating}
+                  className="inline-flex h-10 w-full items-center justify-center gap-2 rounded-md bg-purple-600 px-6 text-sm font-medium text-white transition-colors hover:bg-purple-700 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+                >
+                  <Plus className="h-4 w-4" />
+                  {isGenerating ? 'Provisioning…' : 'Generate QR codes'}
+                </button>
+              </div>
             </div>
 
-            <button
-              onClick={handleGenerate}
-              disabled={isGenerating}
-              className="flex items-center gap-2 px-6 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              <Plus className="w-4 h-4" />
-              {isGenerating ? 'Generating...' : 'Generate QR Codes'}
-            </button>
-          </div>
+            {recentItems.length > 0 && (
+              <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm sm:p-6">
+                <h3 className="text-base font-semibold text-gray-900">
+                  This batch ({recentItems.length})
+                </h3>
+                <p className="mt-1 text-sm text-gray-600">Download each QR from the card below.</p>
+                <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                  {recentItems.map((item) => (
+                    <QrInventoryCard key={item.ref_id} item={item} />
+                  ))}
+                </div>
+              </div>
+            )}
+          </TabsContent>
 
-          <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-md">
-            <p className="text-sm text-blue-800">
-              <strong>Note:</strong> Reference IDs and WhatsApp messages will be auto-generated for each QR code.
-            </p>
-          </div>
-        </div>
-
-        {/* Generated QR Codes */}
-        {generatedQRs.length > 0 && (
-          <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="font-semibold text-gray-900">
-                Generated QR Codes ({generatedQRs.length})
-              </h2>
+          <TabsContent value="library" className="mt-4 space-y-4 outline-none">
+            <div className="flex flex-col gap-3 rounded-xl border border-gray-200 bg-white p-4 shadow-sm sm:flex-row sm:items-end sm:justify-between">
+              <div className="flex flex-1 flex-col gap-2 sm:max-w-xs">
+                <label htmlFor="library-filter-event" className="text-xs font-medium text-gray-700">
+                  Filter by event ID
+                </label>
+                <input
+                  id="library-filter-event"
+                  type="text"
+                  value={filterEventId}
+                  onChange={(e) => {
+                    setFilterEventId(e.target.value);
+                    setLibraryOffset(0);
+                  }}
+                  disabled={!configured}
+                  placeholder="Leave empty for all"
+                  className="w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-sm focus:border-transparent focus:ring-2 focus:ring-purple-500 disabled:bg-gray-100"
+                />
+              </div>
               <button
-                onClick={downloadAllQRs}
-                className="flex items-center gap-2 px-4 py-2 border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 transition-colors"
+                type="button"
+                onClick={() => void loadLibrary()}
+                disabled={!configured || libraryLoading}
+                className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-gray-300 px-3 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
               >
-                <Download className="w-4 h-4" />
-                Download All
+                <RefreshCw className={`h-4 w-4 ${libraryLoading ? 'animate-spin' : ''}`} />
+                Refresh
               </button>
             </div>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-              {generatedQRs.map((qr) => (
-                <div key={qr.id} className="border border-gray-200 rounded-lg p-4 space-y-3">
-                  <div>
-                    <div className="text-sm font-medium text-gray-900 mb-1">{qr.refId}</div>
-                    <div className="text-xs text-gray-500">
-                      {qr.createdAt.toLocaleString()}
-                    </div>
-                  </div>
-                  
-                  <QRGenerator
-                    refId={qr.refId}
-                    whatsappMessage={qr.whatsappMessage}
-                  />
-                  
-                  <div className="pt-2 border-t border-gray-200">
-                    <div className="text-xs font-medium text-gray-700 mb-1">WhatsApp Message:</div>
-                    <div className="text-xs text-gray-600 bg-gray-50 p-2 rounded">
-                      {qr.whatsappMessage}
-                    </div>
-                  </div>
+
+            {libraryError && (
+              <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+                {libraryError}
+              </div>
+            )}
+
+            {libraryLoading && libraryItems.length === 0 ? (
+              <div className="rounded-lg border border-gray-200 bg-white p-12 text-center text-sm text-gray-500">
+                Loading inventory…
+              </div>
+            ) : libraryItems.length === 0 ? (
+              <div className="rounded-lg border border-gray-200 bg-white p-12 text-center text-sm text-gray-500">
+                No QR codes in inventory yet. Use Generate to provision some.
+              </div>
+            ) : (
+              <>
+                <div className="text-xs text-gray-600 sm:text-sm">
+                  Showing{' '}
+                  <span className="font-medium">{libraryTotal === 0 ? 0 : libraryOffset + 1}</span>–
+                  <span className="font-medium">{libraryEnd}</span> of{' '}
+                  <span className="font-medium">{libraryTotal}</span>
                 </div>
-              ))}
-            </div>
-          </div>
-        )}
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                  {libraryItems.map((item) => (
+                    <QrInventoryCard key={item.ref_id} item={item} />
+                  ))}
+                </div>
+                <div className="flex items-center justify-center gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setLibraryOffset((o) => Math.max(0, o - PAGE_SIZE))}
+                    disabled={!canPrev || libraryLoading}
+                    className="rounded-md border border-gray-300 p-2 text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                    aria-label="Previous page"
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </button>
+                  <span className="text-sm text-gray-600">
+                    Page {Math.floor(libraryOffset / PAGE_SIZE) + 1} /{' '}
+                    {Math.max(1, Math.ceil(libraryTotal / PAGE_SIZE))}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setLibraryOffset((o) => o + PAGE_SIZE)}
+                    disabled={!canNext || libraryLoading}
+                    className="rounded-md border border-gray-300 p-2 text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                    aria-label="Next page"
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                </div>
+              </>
+            )}
+          </TabsContent>
+        </Tabs>
       </div>
     </div>
   );

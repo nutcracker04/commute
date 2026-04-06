@@ -3,7 +3,10 @@ import path from 'path'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 
-export default defineConfig({
+const devWorkerTarget =
+  process.env.VITE_DEV_WORKER_URL || process.env.DEV_WORKER_URL || 'http://127.0.0.1:8787'
+
+export default defineConfig(({ mode }) => ({
   plugins: [
     // The React and Tailwind plugins are both required for Make, even if
     // Tailwind is not being actively used – do not remove them
@@ -17,6 +20,18 @@ export default defineConfig({
     },
   },
 
+  server:
+    mode === 'development'
+      ? {
+          proxy: {
+            '/api': {
+              target: devWorkerTarget,
+              changeOrigin: true,
+            },
+          },
+        }
+      : undefined,
+
   // File types to support raw imports. Never add .css, .tsx, or .ts files to this.
   assetsInclude: ['**/*.svg', '**/*.csv'],
-})
+}))

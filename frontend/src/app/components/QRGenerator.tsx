@@ -1,29 +1,26 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import QRCode from 'qrcode';
 import { Download } from 'lucide-react';
 
 interface QRGeneratorProps {
   refId: string;
-  whatsappMessage: string;
+  /** Encoded into the QR image (e.g. redirect URL). Defaults to refId. */
+  encodePayload?: string;
+  whatsappMessage?: string;
   onGenerated?: (dataUrl: string) => void;
 }
 
-export function QRGenerator({ refId, whatsappMessage, onGenerated }: QRGeneratorProps) {
+export function QRGenerator({ refId, encodePayload, whatsappMessage, onGenerated }: QRGeneratorProps) {
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
-  useEffect(() => {
-    if (refId) {
-      generateQR();
-    }
-  }, [refId, whatsappMessage]);
-
-  const generateQR = async () => {
+  const generateQR = useCallback(async () => {
     if (!canvasRef.current || !refId) return;
 
+    const data = encodePayload?.trim() || refId;
+
     try {
-      // Generate QR code with the ref ID as the data
-      await QRCode.toCanvas(canvasRef.current, refId, {
+      await QRCode.toCanvas(canvasRef.current, data, {
         width: 200,
         margin: 2,
         color: {
@@ -38,7 +35,13 @@ export function QRGenerator({ refId, whatsappMessage, onGenerated }: QRGenerator
     } catch (err) {
       console.error('Error generating QR code:', err);
     }
-  };
+  }, [refId, encodePayload, onGenerated]);
+
+  useEffect(() => {
+    if (refId) {
+      void generateQR();
+    }
+  }, [refId, whatsappMessage, generateQR]);
 
   const handleDownload = () => {
     if (!qrDataUrl) return;
@@ -51,11 +54,14 @@ export function QRGenerator({ refId, whatsappMessage, onGenerated }: QRGenerator
 
   return (
     <div className="flex flex-col items-center gap-3">
-      <canvas ref={canvasRef} className="border border-gray-300 rounded-lg" />
+      <canvas
+        ref={canvasRef}
+        className="border border-gray-300 rounded-lg w-40 h-40 sm:w-[200px] sm:h-[200px] max-w-full"
+      />
       {qrDataUrl && (
         <button
           onClick={handleDownload}
-          className="flex items-center gap-2 px-3 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
+          className="flex w-full items-center justify-center gap-2 px-3 py-2 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors sm:w-auto"
         >
           <Download className="w-4 h-4" />
           Download QR

@@ -1,20 +1,17 @@
 import { Link, useLocation } from 'react-router';
 import { QrCode, Users } from 'lucide-react';
+import { useLayoutActions } from './LayoutActionsContext';
 
 export function Navigation() {
   const location = useLocation();
+  const { actions } = useLayoutActions();
 
   return (
     <nav className="bg-white border-b border-gray-200">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex items-center justify-between h-16">
-          <div className="flex items-center gap-8">
-            <div className="flex items-center gap-2">
-              <div className="w-8 h-8 bg-gradient-to-br from-purple-600 to-blue-600 rounded-lg" />
-              <span className="font-semibold text-gray-900">QR Lead System</span>
-            </div>
-            
-            <div className="flex gap-4">
+        <div className="flex flex-col gap-3 py-3 sm:flex-row sm:items-center sm:justify-between sm:h-16 sm:py-0">
+          <div className="flex items-center">
+            <div className="flex flex-wrap gap-2 sm:gap-4">
               <Link
                 to="/"
                 className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
@@ -39,6 +36,8 @@ export function Navigation() {
               </Link>
             </div>
           </div>
+
+          {actions ? <div className="flex items-center sm:justify-end">{actions}</div> : null}
         </div>
       </div>
     </nav>

@@ -21,23 +21,23 @@ export function Pagination({
   const endItem = Math.min(currentPage * itemsPerPage, totalItems);
 
   return (
-    <div className="bg-white rounded-lg shadow-sm border border-gray-200 px-6 py-4 mt-6">
-      <div className="flex items-center justify-between flex-wrap gap-4">
-        <div className="flex items-center gap-4">
-          <div className="text-sm text-gray-700">
+    <div className="bg-white rounded-lg shadow-sm border border-gray-200 px-3 sm:px-4 py-2.5 mt-3">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2 sm:gap-3">
+          <div className="text-xs text-gray-700 hidden sm:block">
             Showing <span className="font-medium">{startItem}</span> to{' '}
             <span className="font-medium">{endItem}</span> of{' '}
             <span className="font-medium">{totalItems}</span> results
           </div>
-          <div className="flex items-center gap-2">
-            <label htmlFor="itemsPerPage" className="text-sm text-gray-700">
+          <div className="flex items-center gap-1.5">
+            <label htmlFor="itemsPerPage" className="text-xs text-gray-700">
               Per page:
             </label>
             <select
               id="itemsPerPage"
               value={itemsPerPage}
               onChange={(e) => onItemsPerPageChange(Number(e.target.value))}
-              className="border border-gray-300 rounded-md px-3 py-1 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              className="border border-gray-300 rounded-md px-2 py-1 text-xs focus:ring-2 focus:ring-blue-500 focus:border-transparent"
             >
               <option value={10}>10</option>
               <option value={25}>25</option>
@@ -47,16 +47,21 @@ export function Pagination({
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
           <button
             onClick={() => onPageChange(currentPage - 1)}
             disabled={currentPage === 1}
-            className="px-3 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-white"
+            className="px-2 py-1.5 border border-gray-300 rounded-md text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-white"
           >
-            <ChevronLeft className="w-4 h-4" />
+            <ChevronLeft className="w-3.5 h-3.5" />
           </button>
           
-          <div className="flex items-center gap-1">
+          <div className="text-xs text-gray-700 sm:hidden px-1">
+            Page <span className="font-medium">{currentPage}</span> /{' '}
+            <span className="font-medium">{totalPages}</span>
+          </div>
+
+          <div className="hidden sm:flex items-center gap-1">
             {Array.from({ length: totalPages }, (_, i) => i + 1)
               .filter((page) => {
                 // Show first page, last page, current page, and pages around current
@@ -78,7 +83,7 @@ export function Pagination({
                     )}
                     <button
                       onClick={() => onPageChange(page)}
-                      className={`px-4 py-2 border rounded-md text-sm font-medium ${
+                      className={`px-2.5 py-1.5 border rounded-md text-xs font-medium ${
                         currentPage === page
                           ? 'bg-blue-600 text-white border-blue-600'
                           : 'border-gray-300 text-gray-700 hover:bg-gray-50'
@@ -94,9 +99,9 @@ export function Pagination({
           <button
             onClick={() => onPageChange(currentPage + 1)}
             disabled={currentPage === totalPages}
-            className="px-3 py-2 border border-gray-300 rounded-md text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-white"
+            className="px-2 py-1.5 border border-gray-300 rounded-md text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-white"
           >
-            <ChevronRight className="w-4 h-4" />
+            <ChevronRight className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>

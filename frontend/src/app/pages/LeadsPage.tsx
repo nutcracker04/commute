@@ -1,10 +1,11 @@
-import { useState, useMemo } from 'react';
-import { Download, Users } from 'lucide-react';
+import { useCallback, useEffect, useState, useMemo } from 'react';
+import { Download } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { format } from 'date-fns';
 import { LeadFilters } from '../components/LeadFilters';
 import { LeadTable, Lead } from '../components/LeadTable';
 import { Pagination } from '../components/Pagination';
+import { useLayoutActions } from '../components/LayoutActionsContext';
 
 // Mock data generator
 const generateMockLeads = (): Lead[] => {
@@ -33,7 +34,8 @@ const generateMockLeads = (): Lead[] => {
 export function LeadsPage() {
   const [leads] = useState<Lead[]>(generateMockLeads());
   const [currentPage, setCurrentPage] = useState(1);
-  const [itemsPerPage, setItemsPerPage] = useState(10);
+  const [itemsPerPage, setItemsPerPage] = useState(25);
+  const { setActions } = useLayoutActions();
   const [filters, setFilters] = useState({
     name: '',
     contact: '',
@@ -74,7 +76,7 @@ export function LeadsPage() {
 
   const totalPages = Math.ceil(filteredLeads.length / itemsPerPage);
 
-  const handleExportToExcel = () => {
+  const handleExportToExcel = useCallback(() => {
     const exportData = filteredLeads.map((lead) => ({
       'Timestamp': format(lead.timestamp, 'MMM dd, yyyy hh:mm a'),
       'Name': lead.name,
@@ -99,56 +101,57 @@ export function LeadsPage() {
     }));
 
     XLSX.writeFile(workbook, `leads-export-${format(new Date(), 'yyyy-MM-dd')}.xlsx`);
-  };
+  }, [filteredLeads]);
+
+  useEffect(() => {
+    setActions(
+      <button
+        onClick={handleExportToExcel}
+        disabled={filteredLeads.length === 0}
+        className="flex w-full items-center justify-center gap-2 px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors sm:w-auto"
+      >
+        <Download className="w-4 h-4" />
+        <span className="hidden sm:inline">Export to Excel</span>
+        <span className="sm:hidden">Export</span>
+      </button>,
+    );
+
+    return () => setActions(null);
+  }, [filteredLeads.length, handleExportToExcel, setActions]);
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="mb-8">
-          <div className="flex items-center gap-3 mb-2">
-            <Users className="w-8 h-8 text-blue-600" />
-            <h1 className="text-gray-900">Lead Management</h1>
-          </div>
-          <p className="text-gray-600">
-            Track and manage leads from QR code scans
-          </p>
+    <div className="bg-gray-50 h-full">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 sm:py-4 h-full flex flex-col min-h-0">
+        <div className="shrink-0">
+          <LeadFilters
+            filters={filters}
+            onFilterChange={handleFilterChange}
+            onReset={handleResetFilters}
+          />
         </div>
 
-        <div className="mb-6 flex justify-end">
-          <button
-            onClick={handleExportToExcel}
-            disabled={filteredLeads.length === 0}
-            className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            <Download className="w-4 h-4" />
-            Export to Excel
-          </button>
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <LeadTable
+            leads={filteredLeads}
+            currentPage={currentPage}
+            itemsPerPage={itemsPerPage}
+          />
         </div>
-
-        <LeadFilters
-          filters={filters}
-          onFilterChange={handleFilterChange}
-          onReset={handleResetFilters}
-        />
-
-        <LeadTable
-          leads={filteredLeads}
-          currentPage={currentPage}
-          itemsPerPage={itemsPerPage}
-        />
 
         {filteredLeads.length > 0 && (
-          <Pagination
-            currentPage={currentPage}
-            totalPages={totalPages}
-            itemsPerPage={itemsPerPage}
-            totalItems={filteredLeads.length}
-            onPageChange={setCurrentPage}
-            onItemsPerPageChange={(items) => {
-              setItemsPerPage(items);
-              setCurrentPage(1);
-            }}
-          />
+          <div className="shrink-0">
+            <Pagination
+              currentPage={currentPage}
+              totalPages={totalPages}
+              itemsPerPage={itemsPerPage}
+              totalItems={filteredLeads.length}
+              onPageChange={setCurrentPage}
+              onItemsPerPageChange={(items) => {
+                setItemsPerPage(items);
+                setCurrentPage(1);
+              }}
+            />
+          </div>
         )}
       </div>
     </div>
