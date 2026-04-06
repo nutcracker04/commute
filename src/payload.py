@@ -69,9 +69,33 @@ def _from_messages_array(messages_val: Any) -> tuple[str | None, str | None, int
     return mid_s, body, ts
 
 
+def _name_from_payload(payload: dict[str, Any]) -> str | None:
+    """Extract sender display name from MSG91 webhook payload.
+
+    Checks top-level name/senderName fields first, then falls back to
+    the contacts profile inside the messages array (Meta Cloud API format).
+    """
+    for key in ("customerName", "name", "senderName", "sender_name"):
+        val = payload.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+
+    parsed_m = _parse_json_if_string(payload.get("messages"))
+    if isinstance(parsed_m, list) and parsed_m and isinstance(parsed_m[0], dict):
+        contacts = parsed_m[0].get("contacts")
+        if isinstance(contacts, list) and contacts and isinstance(contacts[0], dict):
+            profile = contacts[0].get("profile")
+            if isinstance(profile, dict):
+                n = profile.get("name")
+                if isinstance(n, str) and n.strip():
+                    return n.strip()
+
+    return None
+
+
 def iter_inbound_text_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
     """
-    Each item: { wa_message_id, from_phone, text, timestamp }.
+    Each item: { wa_message_id, from_phone, text, timestamp, name }.
     Skips outbound delivery webhooks (direction 1) and non-text inbound.
     """
     out: list[dict[str, Any]] = []
@@ -125,12 +149,15 @@ def iter_inbound_text_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
         raw = f"{from_phone}|{payload.get('ts', '')}|{text_body}"
         wa_message_id = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:40]
 
+    sender_name = _name_from_payload(payload)
+
     out.append(
         {
             "wa_message_id": wa_message_id,
             "from_phone": from_phone,
             "text": text_body,
             "timestamp": ts,
+            "name": sender_name,
         }
     )
     return out

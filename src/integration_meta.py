@@ -25,7 +25,6 @@ def integration_document(*, public_base: str) -> dict[str, object]:
             "ttl_note": "expires_at starts at first GET /r/...; SCAN_TTL_SECONDS (default 3h).",
         },
         "inventory_qr_payload": build_inventory_contract(public_base),
-        "polarr_qr_payload": build_inventory_contract(public_base),
         "webhook": {
             "callback_paths": ["/webhook/whatsapp", "/webhook/msg91"],
             "preferred_path": "/webhook/whatsapp",

@@ -116,11 +116,19 @@ def _admin_api_check(request: Any, env: Any) -> Response | None:
     return None
 
 
+_CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, X-Admin-Key, Authorization",
+    "Access-Control-Max-Age": "86400",
+}
+
+
 def _json_response(data: object, status: int = 200) -> Response:
     return Response(
         json.dumps(data),
         status=status,
-        headers={"content-type": "application/json; charset=utf-8"},
+        headers={"content-type": "application/json; charset=utf-8", **_CORS_HEADERS},
     )
 
 
@@ -184,6 +192,9 @@ class Default(WorkerEntrypoint):
         path = parsed.path or "/"
         method = str(request.method).upper()
 
+        if method == "OPTIONS":
+            return Response("", status=204, headers=_CORS_HEADERS)
+
         if path.startswith("/r/"):
             return await self._handle_physical_redirect(request, path)
         if self._is_whatsapp_webhook_path(path):
@@ -214,6 +225,11 @@ class Default(WorkerEntrypoint):
                 return await self._handle_api_physical_qrs_list(request, url)
             if method == "POST":
                 return await self._handle_api_physical_qrs_create(request, url)
+            return Response("Method not allowed", status=405)
+
+        if path == "/api/leads":
+            if method == "GET":
+                return await self._handle_api_leads_list(request, url)
             return Response("Method not allowed", status=405)
 
         return Response("Not found", status=404)
@@ -450,6 +466,108 @@ class Default(WorkerEntrypoint):
             status=200,
         )
 
+    async def _handle_api_leads_list(self, request, url: str) -> Response:
+        bad = _admin_api_check(request, self.env)
+        if bad is not None:
+            return bad
+
+        parsed = urlparse(url)
+        q = parse_qs(parsed.query or "")
+
+        def _first(key: str) -> str | None:
+            vals = q.get(key, [])
+            return str(vals[0]).strip() if vals and str(vals[0]).strip() else None
+
+        filter_event = _first("event_id")
+        filter_ref = _first("ref_id")
+        filter_phone = _first("from_phone")
+        filter_start = _first("start_ts")
+        filter_end = _first("end_ts")
+
+        try:
+            limit = int(_first("limit") or "100")
+        except ValueError:
+            return _json_response({"error": "invalid limit"}, status=400)
+        try:
+            offset = int(_first("offset") or "0")
+        except ValueError:
+            return _json_response({"error": "invalid offset"}, status=400)
+
+        max_limit = _int_env(self.env, "ADMIN_LIST_MAX_LIMIT", 500)
+        if limit < 1 or limit > max_limit:
+            return _json_response(
+                {"error": f"limit must be between 1 and {max_limit}"},
+                status=400,
+            )
+        if offset < 0:
+            return _json_response({"error": "offset must be >= 0"}, status=400)
+
+        where_parts: list[str] = []
+        bind_vals: list[Any] = []
+
+        if filter_event:
+            where_parts.append("l.event_id = ?")
+            bind_vals.append(filter_event)
+        if filter_ref:
+            where_parts.append("l.ref_id = ?")
+            bind_vals.append(filter_ref)
+        if filter_phone:
+            where_parts.append("l.from_phone = ?")
+            bind_vals.append(filter_phone)
+        if filter_start:
+            try:
+                where_parts.append("l.created_at >= ?")
+                bind_vals.append(int(filter_start))
+            except ValueError:
+                return _json_response({"error": "invalid start_ts"}, status=400)
+        if filter_end:
+            try:
+                where_parts.append("l.created_at <= ?")
+                bind_vals.append(int(filter_end))
+            except ValueError:
+                return _json_response({"error": "invalid end_ts"}, status=400)
+
+        where_sql = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
+
+        count_row = await _d1_first(
+            self.env.DB,
+            f"SELECT COUNT(*) AS n FROM leads l {where_sql}",
+            *bind_vals,
+        )
+        total = int(count_row["n"]) if count_row else 0
+
+        rows = await _d1_all(
+            self.env.DB,
+            f"""
+            SELECT l.id, l.from_phone, l.wa_display_name, l.ref_id,
+                   l.event_id, l.match_method, l.raw_text, l.created_at
+            FROM leads l
+            {where_sql}
+            ORDER BY l.created_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            *bind_vals,
+            limit,
+            offset,
+        )
+
+        items = [
+            {
+                "id": r["id"],
+                "from_phone": r["from_phone"],
+                "wa_display_name": r.get("wa_display_name"),
+                "ref_id": r["ref_id"],
+                "event_id": r["event_id"],
+                "match_method": r["match_method"],
+                "created_at": r["created_at"],
+            }
+            for r in rows
+        ]
+
+        return _json_response(
+            {"items": items, "total": total, "limit": limit, "offset": offset}
+        )
+
     async def _handle_webhook_get(self) -> Response:
         """Inbound provider may probe the callback URL; always return 200."""
         return Response("ok", headers={"content-type": "text/plain"})
@@ -481,6 +599,7 @@ class Default(WorkerEntrypoint):
                 "from_phone": msg["from_phone"],
                 "text": msg["text"],
                 "received_at": received_at,
+                "name": msg.get("name") or "",
             }
             try:
                 await self.env.LEAD_QUEUE.send(to_js(job))
@@ -512,6 +631,7 @@ class Default(WorkerEntrypoint):
             wa_message_id = str(body.get("wa_message_id", ""))
             from_phone = str(body.get("from_phone", ""))
             text = str(body.get("text", ""))
+            wa_display_name = str(body.get("name", "")) or None
             if not wa_message_id or not from_phone:
                 message.ack()
                 continue
@@ -587,11 +707,12 @@ class Default(WorkerEntrypoint):
                     await _d1_run(
                         self.env.DB,
                         """
-                        INSERT INTO leads (whatsapp_message_id, from_phone, event_id, ref_id, match_method, raw_text, created_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        INSERT INTO leads (whatsapp_message_id, from_phone, wa_display_name, event_id, ref_id, match_method, raw_text, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         wa_message_id,
                         from_phone,
+                        wa_display_name,
                         event_id,
                         matched_ref or "",
                         method,

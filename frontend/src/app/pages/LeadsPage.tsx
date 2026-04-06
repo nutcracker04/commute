@@ -6,36 +6,21 @@ import { LeadFilters } from '../components/LeadFilters';
 import { LeadTable, Lead } from '../components/LeadTable';
 import { Pagination } from '../components/Pagination';
 import { useLayoutActions } from '../components/LayoutActionsContext';
+import { listLeads, isAdminApiConfigured } from '../lib/adminApi';
 
-// Mock data generator
-const generateMockLeads = (): Lead[] => {
-  const names = ['John Smith', 'Sarah Johnson', 'Michael Brown', 'Emily Davis', 'David Wilson', 
-                 'Jessica Martinez', 'Christopher Lee', 'Amanda Taylor', 'Matthew Anderson', 'Jennifer Thomas',
-                 'Daniel Jackson', 'Lisa White', 'James Harris', 'Karen Martin', 'Robert Thompson'];
-  const qrRefs = ['QR-2024-001', 'QR-2024-002', 'QR-2024-003', 'QR-2024-004', 'QR-2024-005',
-                  'QR-2024-006', 'QR-2024-007', 'QR-2024-008', 'QR-2024-009', 'QR-2024-010'];
-  
-  const leads: Lead[] = [];
-  for (let i = 0; i < 50; i++) {
-    const randomDate = new Date(2026, 3, Math.floor(Math.random() * 6) + 1, 
-                                Math.floor(Math.random() * 24), Math.floor(Math.random() * 60));
-    leads.push({
-      id: `lead-${i + 1}`,
-      timestamp: randomDate,
-      name: names[Math.floor(Math.random() * names.length)],
-      contact: `+1 (555) ${String(Math.floor(Math.random() * 900) + 100)}-${String(Math.floor(Math.random() * 9000) + 1000)}`,
-      qrRefId: qrRefs[Math.floor(Math.random() * qrRefs.length)],
-    });
-  }
-  
-  return leads.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
-};
+const PAGE_SIZE = 25;
 
 export function LeadsPage() {
-  const [leads] = useState<Lead[]>(generateMockLeads());
-  const [currentPage, setCurrentPage] = useState(1);
-  const [itemsPerPage, setItemsPerPage] = useState(25);
+  const configured = isAdminApiConfigured();
   const { setActions } = useLayoutActions();
+
+  const [leads, setLeads] = useState<Lead[]>([]);
+  const [total, setTotal] = useState(0);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(PAGE_SIZE);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
   const [filters, setFilters] = useState({
     name: '',
     contact: '',
@@ -50,34 +35,60 @@ export function LeadsPage() {
   };
 
   const handleResetFilters = () => {
-    setFilters({
-      name: '',
-      contact: '',
-      refId: '',
-      startDate: '',
-      endDate: '',
-    });
+    setFilters({ name: '', contact: '', refId: '', startDate: '', endDate: '' });
     setCurrentPage(1);
   };
 
-  const filteredLeads = useMemo(() => {
-    return leads.filter((lead) => {
-      const matchesName = lead.name.toLowerCase().includes(filters.name.toLowerCase());
-      const matchesContact = lead.contact.toLowerCase().includes(filters.contact.toLowerCase());
-      const matchesRefId = lead.qrRefId.toLowerCase().includes(filters.refId.toLowerCase());
-      
-      const leadDate = new Date(lead.timestamp);
-      const matchesStartDate = !filters.startDate || leadDate >= new Date(filters.startDate);
-      const matchesEndDate = !filters.endDate || leadDate <= new Date(filters.endDate + 'T23:59:59');
-      
-      return matchesName && matchesContact && matchesRefId && matchesStartDate && matchesEndDate;
-    });
-  }, [leads, filters]);
+  const offset = (currentPage - 1) * itemsPerPage;
 
-  const totalPages = Math.ceil(filteredLeads.length / itemsPerPage);
+  useEffect(() => {
+    if (!configured) return;
+
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+
+    const params: Parameters<typeof listLeads>[0] = {
+      limit: itemsPerPage,
+      offset,
+    };
+    if (filters.refId.trim()) params.ref_id = filters.refId.trim();
+    if (filters.contact.trim()) params.from_phone = filters.contact.trim();
+    if (filters.startDate) params.start_ts = Math.floor(new Date(filters.startDate).getTime() / 1000);
+    if (filters.endDate) params.end_ts = Math.floor(new Date(filters.endDate + 'T23:59:59').getTime() / 1000);
+
+    listLeads(params)
+      .then((res) => {
+        if (cancelled) return;
+        const items = Array.isArray(res?.items) ? res.items : [];
+        const mapped: Lead[] = items.map((item) => ({
+          id: String(item.id),
+          timestamp: new Date(item.created_at * 1000),
+          name: item.wa_display_name || item.from_phone,
+          contact: item.from_phone,
+          qrRefId: item.ref_id,
+        }));
+        // Client-side name filter (API doesn't filter by name)
+        const nameFilter = filters.name.trim().toLowerCase();
+        setLeads(nameFilter ? mapped.filter((l) => l.name.toLowerCase().includes(nameFilter)) : mapped);
+        setTotal(res?.total ?? 0);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setError(e instanceof Error ? e.message : 'Failed to load leads');
+        setLeads([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [configured, offset, itemsPerPage, filters.refId, filters.contact, filters.startDate, filters.endDate, filters.name]);
+
+  const totalPages = Math.ceil(total / itemsPerPage);
 
   const handleExportToExcel = useCallback(() => {
-    const exportData = filteredLeads.map((lead) => ({
+    const exportData = leads.map((lead) => ({
       'Timestamp': format(lead.timestamp, 'MMM dd, yyyy hh:mm a'),
       'Name': lead.name,
       'Contact': lead.contact,
@@ -101,7 +112,10 @@ export function LeadsPage() {
     }));
 
     XLSX.writeFile(workbook, `leads-export-${format(new Date(), 'yyyy-MM-dd')}.xlsx`);
-  }, [filteredLeads]);
+  }, [leads]);
+
+  // Server-side filtered count is `total`; after client name filter use leads.length
+  const filteredLeads = useMemo(() => leads, [leads]);
 
   useEffect(() => {
     setActions(
@@ -115,7 +129,6 @@ export function LeadsPage() {
         <span className="sm:hidden">Export</span>
       </button>,
     );
-
     return () => setActions(null);
   }, [filteredLeads.length, handleExportToExcel, setActions]);
 
@@ -130,21 +143,39 @@ export function LeadsPage() {
           />
         </div>
 
-        <div className="flex-1 min-h-0 overflow-hidden">
-          <LeadTable
-            leads={filteredLeads}
-            currentPage={currentPage}
-            itemsPerPage={itemsPerPage}
-          />
+        {!configured && (
+          <div className="mt-4 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            Admin API not configured. Set <code>VITE_ADMIN_API_SECRET</code> in your <code>.env</code> file.
+          </div>
+        )}
+
+        {error && (
+          <div className="mt-4 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+            {error}
+          </div>
+        )}
+
+        <div className="flex-1 min-h-0 overflow-hidden mt-3">
+          {loading && leads.length === 0 ? (
+            <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center text-sm text-gray-500">
+              Loading leads…
+            </div>
+          ) : (
+            <LeadTable
+              leads={filteredLeads}
+              currentPage={1}
+              itemsPerPage={filteredLeads.length || 1}
+            />
+          )}
         </div>
 
-        {filteredLeads.length > 0 && (
+        {total > 0 && (
           <div className="shrink-0">
             <Pagination
               currentPage={currentPage}
               totalPages={totalPages}
               itemsPerPage={itemsPerPage}
-              totalItems={filteredLeads.length}
+              totalItems={total}
               onPageChange={setCurrentPage}
               onItemsPerPageChange={(items) => {
                 setItemsPerPage(items);
