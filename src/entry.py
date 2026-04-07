@@ -383,7 +383,7 @@ class Default(WorkerEntrypoint):
             if new_id is None:
                 return _json_response({"error": "failed to insert QR row"}, status=500)
 
-            full_text = build_prefilled_text(greeting, context_text, request_text, str(new_id))
+            full_text = build_prefilled_text(greeting, context_text, request_text, str(new_id), qr_id=new_id)
             await _d1_run(
                 self.env.DB,
                 "UPDATE qrs SET full_prefilled_text = ? WHERE id = ?",

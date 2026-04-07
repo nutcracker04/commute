@@ -22,7 +22,7 @@ max_retries = 5
 [vars]
 # WhatsApp prefilled text template — passed to build_prefilled_text()
 WA_GREETING = "Hey!"
-WA_CONTEXT_TEXT = "Regarding the offer"
+WA_CONTEXT_TEXT = "the offer"
 WA_REQUEST_TEXT = "I would like more information"
 # TTL for scan_sessions after a QR is scanned (default 3h)
 SCAN_TTL_SECONDS = "10800"
