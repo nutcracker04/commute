@@ -57,6 +57,18 @@ def _str_env(env: Any, name: str, default: str = "") -> str:
     return default if raw is None else str(raw)
 
 
+def _bool_env(env: Any, name: str, default: bool) -> bool:
+    raw = getattr(env, name, None)
+    if raw is None:
+        return default
+    s = str(raw).strip().lower()
+    if s in ("1", "true", "yes", "on"):
+        return True
+    if s in ("0", "false", "no", "off", ""):
+        return False
+    return default
+
+
 def _public_base_from_request(request: Any, env: Any) -> str:
     override = _str_env(env, "PUBLIC_BASE_URL", "").strip()
     if override:
@@ -327,8 +339,8 @@ class Default(WorkerEntrypoint):
         await _d1_run(
             self.env.DB,
             """
-            INSERT OR REPLACE INTO scan_sessions (qr_id, full_text, scanned_at, expires_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO scan_sessions (qr_id, full_text, scanned_at, expires_at, claimed_at)
+            VALUES (?, ?, ?, ?, NULL)
             """,
             qr_id,
             full_text,
@@ -444,6 +456,11 @@ class Default(WorkerEntrypoint):
                    s.scanned_at AS last_scanned_at, s.expires_at
             FROM qrs q
             LEFT JOIN scan_sessions s ON s.qr_id = q.id
+              AND s.id = (
+                SELECT id FROM scan_sessions
+                WHERE qr_id = q.id
+                ORDER BY scanned_at DESC LIMIT 1
+              )
             ORDER BY q.id DESC
             LIMIT ? OFFSET ?
             """,
@@ -623,6 +640,9 @@ class Default(WorkerEntrypoint):
         min_gap = _float_env(self.env, "LCS_MIN_GAP", 0.08)
         tau = _float_env(self.env, "LCS_RECENCY_TAU_MINUTES", 60.0)
         max_cand = _int_env(self.env, "LCS_MAX_CANDIDATES", 500)
+        require_confidence = _bool_env(self.env, "LCS_REQUIRE_CONFIDENCE", False)
+        tie_break = _str_env(self.env, "LCS_TIE_BREAK", "recent").strip().lower()
+        prefer_recent_scan_on_tie = tie_break not in ("first", "lru", "oldest")
         fallback_text = _str_env(
             self.env,
             "FALLBACK_REPLY_TEXT",
@@ -663,6 +683,7 @@ class Default(WorkerEntrypoint):
             try:
                 ref = extract_ref_id(text)
                 matched_qr_id: int | None = None
+                matched_session_id: int | None = None
                 method: str | None = None
 
                 if ref:
@@ -685,10 +706,11 @@ class Default(WorkerEntrypoint):
                     rows = await _d1_all(
                         self.env.DB,
                         """
-                        SELECT s.qr_id, q.full_prefilled_text, s.scanned_at
+                        SELECT s.id AS session_id, s.qr_id,
+                               s.full_text AS full_prefilled_text, s.scanned_at
                         FROM scan_sessions s
-                        JOIN qrs q ON q.id = s.qr_id
                         WHERE s.expires_at > ?
+                          AND s.claimed_at IS NULL
                         ORDER BY s.scanned_at DESC
                         LIMIT ?
                         """,
@@ -703,10 +725,13 @@ class Default(WorkerEntrypoint):
                         min_score=min_score,
                         min_gap=min_gap,
                         tau_minutes=tau,
+                        require_confidence=require_confidence,
+                        prefer_recent_scan_on_tie=prefer_recent_scan_on_tie,
                     )
                     if match:
                         matched_qr_id = match.qr_id
                         method = match.method
+                        matched_session_id = match.session_id
 
                 if matched_qr_id is not None and method:
                     await _d1_run(
@@ -734,6 +759,17 @@ class Default(WorkerEntrypoint):
                         method,
                         wa_message_id,
                     )
+                    # Claim the specific session row so it is excluded from future
+                    # LCS matching. Each scan now has its own row (id PK), so claiming
+                    # one person's session does not affect another person who scanned
+                    # the same QR. ref_id matches need no claim.
+                    if method == "lcs" and matched_session_id is not None:
+                        await _d1_run(
+                            self.env.DB,
+                            "UPDATE scan_sessions SET claimed_at = ? WHERE id = ?",
+                            now_ts,
+                            matched_session_id,
+                        )
                 else:
                     await self._send_whatsapp_session_text(from_phone, fallback_text)
             except Exception:

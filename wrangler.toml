@@ -26,7 +26,11 @@ WA_CONTEXT_TEXT = "the offer"
 WA_REQUEST_TEXT = "I would like more information"
 # TTL for scan_sessions after a QR is scanned (default 3h)
 SCAN_TTL_SECONDS = "10800"
-# LCS fuzzy match tuning
+# LCS fuzzy match: default always attributes to closest active scan_session (no dropped leads).
+# Set LCS_REQUIRE_CONFIDENCE = "true" to restore min_score / min_gap gating.
+LCS_REQUIRE_CONFIDENCE = "false"
+# When fuzzy scores tie after greeting match: "recent" = last scanned QR; "first" = earliest scan in the window.
+LCS_TIE_BREAK = "recent"
 LCS_MIN_SCORE = "0.35"
 LCS_MIN_GAP = "0.08"
 LCS_RECENCY_TAU_MINUTES = "60"
