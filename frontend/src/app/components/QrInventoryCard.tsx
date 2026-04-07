@@ -1,5 +1,5 @@
 import { QRGenerator } from './QRGenerator';
-import type { PhysicalQrItem } from '../lib/adminApi';
+import type { QrItem } from '../lib/adminApi';
 
 function formatTs(sec: number | null | undefined): string {
   if (sec == null) return '—';
@@ -7,42 +7,35 @@ function formatTs(sec: number | null | undefined): string {
 }
 
 interface QrInventoryCardProps {
-  item: PhysicalQrItem;
+  item: QrItem;
 }
 
 export function QrInventoryCard({ item }: QrInventoryCardProps) {
-  const scanned = item.first_scanned_at != null;
+  const scanned = item.last_scanned_at != null;
 
   return (
     <div className="border border-gray-200 rounded-lg p-3 sm:p-4 space-y-3 bg-white">
       <div className="space-y-1">
-        <div className="text-xs font-mono font-medium text-gray-900 break-all">{item.ref_id}</div>
+        <div className="text-xs font-mono font-medium text-gray-900">QR #{item.id}</div>
         <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-gray-500">
-          <span>Event: {item.event_id}</span>
           <span>Provisioned: {formatTs(item.provisioned_at)}</span>
         </div>
-        {(item.batch_id || item.label) && (
-          <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-gray-600">
-            {item.batch_id ? <span>Batch: {item.batch_id}</span> : null}
-            {item.label ? <span>Label: {item.label}</span> : null}
-          </div>
-        )}
         <div className="text-[11px]">
           <span
             className={
               scanned ? 'text-green-700 font-medium' : 'text-amber-700 font-medium'
             }
           >
-            {scanned ? `Scanned ${formatTs(item.first_scanned_at)}` : 'Not scanned yet'}
+            {scanned ? `Last scanned ${formatTs(item.last_scanned_at)}` : 'Not scanned yet'}
           </span>
           {item.expires_at != null && (
-            <span className="text-gray-500 ml-2">Expires: {formatTs(item.expires_at)}</span>
+            <span className="text-gray-500 ml-2">Session expires: {formatTs(item.expires_at)}</span>
           )}
         </div>
       </div>
 
       <QRGenerator
-        refId={item.ref_id}
+        refId={String(item.id)}
         encodePayload={item.redirect_url}
         whatsappMessage={item.full_prefilled_text}
       />

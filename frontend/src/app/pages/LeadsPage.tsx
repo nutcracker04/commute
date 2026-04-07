@@ -52,7 +52,8 @@ export function LeadsPage() {
       limit: itemsPerPage,
       offset,
     };
-    if (filters.refId.trim()) params.ref_id = filters.refId.trim();
+    const refIdNum = parseInt(filters.refId.trim(), 10);
+    if (filters.refId.trim() && !isNaN(refIdNum)) params.qr_id = refIdNum;
     if (filters.contact.trim()) params.from_phone = filters.contact.trim();
     if (filters.startDate) params.start_ts = Math.floor(new Date(filters.startDate).getTime() / 1000);
     if (filters.endDate) params.end_ts = Math.floor(new Date(filters.endDate + 'T23:59:59').getTime() / 1000);
@@ -66,7 +67,7 @@ export function LeadsPage() {
           timestamp: new Date(item.created_at * 1000),
           name: item.wa_display_name || item.from_phone,
           contact: item.from_phone,
-          qrRefId: item.ref_id,
+          qrRefId: item.qr_id != null ? String(item.qr_id) : '',
         }));
         // Client-side name filter (API doesn't filter by name)
         const nameFilter = filters.name.trim().toLowerCase();

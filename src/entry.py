@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import json
 import time
-import uuid
 from typing import Any
 from urllib.parse import parse_qs, quote, urlparse
 
@@ -140,20 +139,59 @@ def _js_to_py(obj: Any) -> Any:
     return obj
 
 
+def _d1_clean_value(v: Any) -> Any:
+    """Convert JS null/undefined proxy values to Python None after D1 row fetch."""
+    if v is None:
+        return None
+    type_name = type(v).__name__
+    if type_name in ("JsNull", "JsUndefined"):
+        return None
+    if hasattr(v, "to_py"):
+        return v.to_py()
+    return v
+
+
+def _d1_clean_row(row: dict) -> dict:
+    return {k: _d1_clean_value(v) for k, v in row.items()}
+
+
+def _d1_nullsafe(sql: str, args: tuple[Any, ...]) -> tuple[str, tuple[Any, ...]]:
+    """Replace ? placeholders with NULL literal for any None values.
+
+    D1's Python binding cannot accept None/null bind parameters, so we inline
+    NULL directly into the SQL and remove those positions from the bind list.
+    """
+    parts = sql.split("?")
+    if len(parts) - 1 != len(args):
+        return sql, args
+    new_args: list[Any] = []
+    out: list[str] = [parts[0]]
+    for i, arg in enumerate(args):
+        if arg is None:
+            out.append("NULL")
+        else:
+            out.append("?")
+            new_args.append(arg)
+        out.append(parts[i + 1])
+    return "".join(out), tuple(new_args)
+
+
 async def _d1_first(db: Any, sql: str, *bind_args: Any) -> dict[str, Any] | None:
-    stmt = db.prepare(sql)
-    bound = stmt.bind(*bind_args) if bind_args else stmt
+    safe_sql, safe_args = _d1_nullsafe(sql, bind_args)
+    stmt = db.prepare(safe_sql)
+    bound = stmt.bind(*safe_args) if safe_args else stmt
     row = _js_to_py(await bound.first())
     if row is None:
         return None
     if isinstance(row, dict):
-        return dict(row)
+        return _d1_clean_row(dict(row))
     return None
 
 
 async def _d1_all(db: Any, sql: str, *bind_args: Any) -> list[dict[str, Any]]:
-    stmt = db.prepare(sql)
-    bound = stmt.bind(*bind_args) if bind_args else stmt
+    safe_sql, safe_args = _d1_nullsafe(sql, bind_args)
+    stmt = db.prepare(safe_sql)
+    bound = stmt.bind(*safe_args) if safe_args else stmt
     result = _js_to_py(await bound.all())
     if not isinstance(result, dict):
         return []
@@ -163,19 +201,21 @@ async def _d1_all(db: Any, sql: str, *bind_args: Any) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for row in rows:
         if isinstance(row, dict):
-            out.append(dict(row))
+            out.append(_d1_clean_row(dict(row)))
     return out
 
 
 async def _d1_run(db: Any, sql: str, *bind_args: Any) -> None:
-    stmt = db.prepare(sql)
-    bound = stmt.bind(*bind_args) if bind_args else stmt
+    safe_sql, safe_args = _d1_nullsafe(sql, bind_args)
+    stmt = db.prepare(safe_sql)
+    bound = stmt.bind(*safe_args) if safe_args else stmt
     await bound.run()
 
 
 async def _d1_run_changes(db: Any, sql: str, *bind_args: Any) -> int:
-    stmt = db.prepare(sql)
-    bound = stmt.bind(*bind_args) if bind_args else stmt
+    safe_sql, safe_args = _d1_nullsafe(sql, bind_args)
+    stmt = db.prepare(safe_sql)
+    bound = stmt.bind(*safe_args) if safe_args else stmt
     result = _js_to_py(await bound.run())
     if not isinstance(result, dict):
         return 0
@@ -183,6 +223,23 @@ async def _d1_run_changes(db: Any, sql: str, *bind_args: Any) -> int:
     if isinstance(meta, dict):
         return int(meta.get("changes", 0) or 0)
     return int(getattr(meta, "changes", 0) or 0)
+
+
+async def _d1_last_insert_rowid(db: Any, sql: str, *bind_args: Any) -> int | None:
+    """Run an INSERT and return the last_row_id from the D1 run result meta."""
+    safe_sql, safe_args = _d1_nullsafe(sql, bind_args)
+    stmt = db.prepare(safe_sql)
+    bound = stmt.bind(*safe_args) if safe_args else stmt
+    result = _js_to_py(await bound.run())
+    if not isinstance(result, dict):
+        return None
+    meta = result.get("meta") or {}
+    if isinstance(meta, dict):
+        rowid = meta.get("last_row_id")
+        if rowid is not None:
+            return int(rowid)
+    rowid = getattr(meta, "last_row_id", None)
+    return int(rowid) if rowid is not None else None
 
 
 class Default(WorkerEntrypoint):
@@ -196,7 +253,7 @@ class Default(WorkerEntrypoint):
             return Response("", status=204, headers=_CORS_HEADERS)
 
         if path.startswith("/r/"):
-            return await self._handle_physical_redirect(request, path)
+            return await self._handle_redirect(request, path)
         if self._is_whatsapp_webhook_path(path):
             if method == "GET":
                 return await self._handle_webhook_get()
@@ -220,11 +277,11 @@ class Default(WorkerEntrypoint):
                 ),
                 headers={"content-type": "application/json"},
             )
-        if path == "/api/physical-qrs":
+        if path == "/api/qrs":
             if method == "GET":
-                return await self._handle_api_physical_qrs_list(request, url)
+                return await self._handle_api_qrs_list(request, url)
             if method == "POST":
-                return await self._handle_api_physical_qrs_create(request, url)
+                return await self._handle_api_qrs_create(request, url)
             return Response("Method not allowed", status=405)
 
         if path == "/api/leads":
@@ -240,57 +297,49 @@ class Default(WorkerEntrypoint):
             return True
         return path.endswith("/webhook/whatsapp") or path.endswith("/webhook/msg91")
 
-    async def _handle_physical_redirect(self, request, path: str) -> Response:
+    async def _handle_redirect(self, request, path: str) -> Response:
         token = path.removeprefix("/r/").strip("/").split("/")[0]
         if not token:
-            return Response("Missing ref or slug", status=400)
+            return Response("Missing QR id", status=400)
+
+        try:
+            qr_id = int(token)
+        except ValueError:
+            return Response("Invalid QR id", status=400)
 
         row = await _d1_first(
             self.env.DB,
-            """
-            SELECT p.ref_id, p.full_prefilled_text, p.first_scanned_at, p.expires_at,
-                   e.wa_phone_e164
-            FROM physical_qrs p
-            JOIN events e ON e.id = p.event_id
-            WHERE p.ref_id = ? OR p.slug = ?
-            """,
-            token,
-            token,
+            "SELECT id, full_prefilled_text FROM qrs WHERE id = ?",
+            qr_id,
         )
         if not row:
             return Response("Unknown QR", status=404)
 
-        now = int(time.time())
-        expires_at = row.get("expires_at")
-        if expires_at is not None and int(expires_at) <= now:
-            return Response(
-                "This link has expired. Please use a current QR code.",
-                status=410,
-                headers={"content-type": "text/plain; charset=utf-8"},
-            )
-
-        ttl = _int_env(self.env, "SCAN_TTL_SECONDS", 10800)
-        first_scanned = row.get("first_scanned_at")
-        ref_id = str(row["ref_id"])
-        if first_scanned is None:
-            await _d1_run(
-                self.env.DB,
-                """
-                UPDATE physical_qrs
-                SET first_scanned_at = ?, expires_at = ?
-                WHERE ref_id = ? AND first_scanned_at IS NULL
-                """,
-                now,
-                now + ttl,
-                ref_id,
-            )
-
         full_text = str(row["full_prefilled_text"])
-        phone = str(row["wa_phone_e164"]).lstrip("+")
+        phone = _str_env(self.env, "MSG91_INTEGRATED_NUMBER", "").lstrip("+")
+        if not phone:
+            return Response("WhatsApp number not configured", status=503)
+
+        now = int(time.time())
+        ttl = _int_env(self.env, "SCAN_TTL_SECONDS", 10800)
+        expires_at = now + ttl
+
+        await _d1_run(
+            self.env.DB,
+            """
+            INSERT OR REPLACE INTO scan_sessions (qr_id, full_text, scanned_at, expires_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            qr_id,
+            full_text,
+            now,
+            expires_at,
+        )
+
         wa_url = f"https://wa.me/{phone}?text={quote(full_text, safe='')}"
         return Response("", status=302, headers={"Location": wa_url})
 
-    async def _handle_api_physical_qrs_create(self, request, url: str) -> Response:
+    async def _handle_api_qrs_create(self, request, url: str) -> Response:
         bad = _admin_api_check(request, self.env)
         if bad is not None:
             return bad
@@ -302,10 +351,6 @@ class Default(WorkerEntrypoint):
             return _json_response({"error": "invalid JSON"}, status=400)
         if not isinstance(payload, dict):
             return _json_response({"error": "body must be a JSON object"}, status=400)
-
-        event_id = str(payload.get("event_id") or "").strip()
-        if not event_id:
-            return _json_response({"error": "event_id is required"}, status=400)
 
         raw_count = payload.get("count", 1)
         try:
@@ -319,73 +364,57 @@ class Default(WorkerEntrypoint):
                 status=400,
             )
 
-        batch_id = payload.get("batch_id")
-        batch_s = str(batch_id).strip() if batch_id is not None and str(batch_id).strip() else None
-        label_raw = payload.get("label")
-        label_s = str(label_raw).strip() if label_raw is not None and str(label_raw).strip() else None
-
-        ev = await _d1_first(
-            self.env.DB,
-            "SELECT id, greeting, context_text, request_text FROM events WHERE id = ?",
-            event_id,
-        )
-        if not ev:
-            return _json_response({"error": "unknown event_id"}, status=404)
-
-        greeting = str(ev.get("greeting", "Hey!"))
-        context_text = str(ev["context_text"])
-        request_text = str(ev.get("request_text", "I'd like more info"))
+        greeting = _str_env(self.env, "WA_GREETING", "Hey!")
+        context_text = _str_env(self.env, "WA_CONTEXT_TEXT", "Regarding the offer")
+        request_text = _str_env(self.env, "WA_REQUEST_TEXT", "I would like more information")
 
         base = _public_base_from_request(request, self.env)
         now = int(time.time())
         items: list[dict[str, Any]] = []
 
         for _ in range(count):
-            ref_id = uuid.uuid4().hex[:16]
-            full_text = build_prefilled_text(greeting, context_text, request_text, ref_id)
-            await _d1_run(
+            placeholder_text = build_prefilled_text(greeting, context_text, request_text, "0")
+            new_id = await _d1_last_insert_rowid(
                 self.env.DB,
-                """
-                INSERT INTO physical_qrs (
-                    ref_id, event_id, full_prefilled_text, batch_id, label,
-                    external_sku, slug, provisioned_at, first_scanned_at, expires_at
-                )
-                VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, NULL, NULL)
-                """,
-                ref_id,
-                event_id,
-                full_text,
-                batch_s,
-                label_s,
+                "INSERT INTO qrs (full_prefilled_text, provisioned_at) VALUES (?, ?)",
+                placeholder_text,
                 now,
             )
+            if new_id is None:
+                return _json_response({"error": "failed to insert QR row"}, status=500)
+
+            full_text = build_prefilled_text(greeting, context_text, request_text, str(new_id))
+            await _d1_run(
+                self.env.DB,
+                "UPDATE qrs SET full_prefilled_text = ? WHERE id = ?",
+                full_text,
+                new_id,
+            )
+
             items.append(
                 {
-                    "ref_id": ref_id,
-                    "event_id": event_id,
+                    "id": new_id,
                     "full_prefilled_text": full_text,
-                    "redirect_url": f"{base}/r/{ref_id}",
-                    "batch_id": batch_s,
-                    "label": label_s,
+                    "redirect_url": f"{base}/r/{new_id}",
                     "provisioned_at": now,
+                    "last_scanned_at": None,
+                    "expires_at": None,
                 }
             )
 
         return _json_response({"created": len(items), "items": items}, status=201)
 
-    async def _handle_api_physical_qrs_list(self, request, url: str) -> Response:
+    async def _handle_api_qrs_list(self, request, url: str) -> Response:
         bad = _admin_api_check(request, self.env)
         if bad is not None:
             return bad
 
         parsed = urlparse(url)
         q = parse_qs(parsed.query or "")
+
         def _first(key: str) -> str | None:
             vals = q.get(key, [])
             return str(vals[0]).strip() if vals and str(vals[0]).strip() else None
-
-        filter_event = _first("event_id")
-        filter_batch = _first("batch_id")
 
         try:
             limit = int(_first("limit") or "100")
@@ -405,34 +434,19 @@ class Default(WorkerEntrypoint):
         if offset < 0:
             return _json_response({"error": "offset must be >= 0"}, status=400)
 
-        where_parts: list[str] = []
-        bind_count: list[Any] = []
-        if filter_event:
-            where_parts.append("event_id = ?")
-            bind_count.append(filter_event)
-        if filter_batch:
-            where_parts.append("batch_id = ?")
-            bind_count.append(filter_batch)
-        where_sql = " AND ".join(where_parts) if where_parts else "1=1"
-
-        count_row = await _d1_first(
-            self.env.DB,
-            f"SELECT COUNT(*) AS n FROM physical_qrs WHERE {where_sql}",
-            *bind_count,
-        )
+        count_row = await _d1_first(self.env.DB, "SELECT COUNT(*) AS n FROM qrs")
         total = int(count_row["n"]) if count_row and count_row.get("n") is not None else 0
 
         rows = await _d1_all(
             self.env.DB,
-            f"""
-            SELECT ref_id, event_id, full_prefilled_text, batch_id, label, slug, external_sku,
-                   provisioned_at, first_scanned_at, expires_at
-            FROM physical_qrs
-            WHERE {where_sql}
-            ORDER BY provisioned_at DESC, ref_id DESC
+            """
+            SELECT q.id, q.full_prefilled_text, q.provisioned_at,
+                   s.scanned_at AS last_scanned_at, s.expires_at
+            FROM qrs q
+            LEFT JOIN scan_sessions s ON s.qr_id = q.id
+            ORDER BY q.id DESC
             LIMIT ? OFFSET ?
             """,
-            *bind_count,
             limit,
             offset,
         )
@@ -440,24 +454,21 @@ class Default(WorkerEntrypoint):
         base = _public_base_from_request(request, self.env)
         items: list[dict[str, Any]] = []
         for r in rows:
-            rid = str(r["ref_id"])
+            qid = int(r["id"])
             items.append(
                 {
-                    "ref_id": rid,
-                    "event_id": str(r["event_id"]),
+                    "id": qid,
                     "full_prefilled_text": str(r["full_prefilled_text"]),
-                    "redirect_url": f"{base}/r/{rid}",
-                    "batch_id": r.get("batch_id"),
-                    "label": r.get("label"),
-                    "slug": r.get("slug"),
-                    "external_sku": r.get("external_sku"),
+                    "redirect_url": f"{base}/r/{qid}",
                     "provisioned_at": int(r["provisioned_at"])
                     if r.get("provisioned_at") is not None
                     else None,
-                    "first_scanned_at": int(r["first_scanned_at"])
-                    if r.get("first_scanned_at") is not None
+                    "last_scanned_at": int(r["last_scanned_at"])
+                    if r.get("last_scanned_at") is not None
                     else None,
-                    "expires_at": int(r["expires_at"]) if r.get("expires_at") is not None else None,
+                    "expires_at": int(r["expires_at"])
+                    if r.get("expires_at") is not None
+                    else None,
                 }
             )
 
@@ -478,8 +489,7 @@ class Default(WorkerEntrypoint):
             vals = q.get(key, [])
             return str(vals[0]).strip() if vals and str(vals[0]).strip() else None
 
-        filter_event = _first("event_id")
-        filter_ref = _first("ref_id")
+        filter_qr = _first("qr_id")
         filter_phone = _first("from_phone")
         filter_start = _first("start_ts")
         filter_end = _first("end_ts")
@@ -505,12 +515,12 @@ class Default(WorkerEntrypoint):
         where_parts: list[str] = []
         bind_vals: list[Any] = []
 
-        if filter_event:
-            where_parts.append("l.event_id = ?")
-            bind_vals.append(filter_event)
-        if filter_ref:
-            where_parts.append("l.ref_id = ?")
-            bind_vals.append(filter_ref)
+        if filter_qr:
+            try:
+                where_parts.append("l.qr_id = ?")
+                bind_vals.append(int(filter_qr))
+            except ValueError:
+                return _json_response({"error": "invalid qr_id"}, status=400)
         if filter_phone:
             where_parts.append("l.from_phone = ?")
             bind_vals.append(filter_phone)
@@ -539,8 +549,8 @@ class Default(WorkerEntrypoint):
         rows = await _d1_all(
             self.env.DB,
             f"""
-            SELECT l.id, l.from_phone, l.wa_display_name, l.ref_id,
-                   l.event_id, l.match_method, l.raw_text, l.created_at
+            SELECT l.id, l.from_phone, l.wa_display_name, l.qr_id,
+                   l.match_method, l.raw_text, l.created_at
             FROM leads l
             {where_sql}
             ORDER BY l.created_at DESC
@@ -556,8 +566,7 @@ class Default(WorkerEntrypoint):
                 "id": r["id"],
                 "from_phone": r["from_phone"],
                 "wa_display_name": r.get("wa_display_name"),
-                "ref_id": r["ref_id"],
-                "event_id": r["event_id"],
+                "qr_id": r.get("qr_id"),
                 "match_method": r["match_method"],
                 "created_at": r["created_at"],
             }
@@ -608,7 +617,7 @@ class Default(WorkerEntrypoint):
 
         return Response(json.dumps({"received": len(messages)}), headers={"content-type": "application/json"})
 
-    async def queue(self, batch):  # type: ignore[override]
+    async def queue(self, batch, env=None, ctx=None):  # type: ignore[override]
         now_ts = int(time.time())
         min_score = _float_env(self.env, "LCS_MIN_SCORE", 0.35)
         min_gap = _float_env(self.env, "LCS_MIN_GAP", 0.08)
@@ -653,37 +662,34 @@ class Default(WorkerEntrypoint):
             claimed = True
             try:
                 ref = extract_ref_id(text)
-                event_id: str | None = None
-                matched_ref: str | None = None
+                matched_qr_id: int | None = None
                 method: str | None = None
 
                 if ref:
-                    row = await _d1_first(
-                        self.env.DB,
-                        """
-                        SELECT ref_id, event_id
-                        FROM physical_qrs
-                        WHERE ref_id = ?
-                          AND first_scanned_at IS NOT NULL
-                          AND expires_at > ?
-                        """,
-                        ref,
-                        now_ts,
-                    )
-                    if row:
-                        event_id = str(row["event_id"])
-                        matched_ref = str(row["ref_id"])
-                        method = "ref_id"
+                    try:
+                        ref_int = int(ref)
+                    except ValueError:
+                        ref_int = None
 
-                if not event_id:
+                    if ref_int is not None:
+                        row = await _d1_first(
+                            self.env.DB,
+                            "SELECT id FROM qrs WHERE id = ?",
+                            ref_int,
+                        )
+                        if row:
+                            matched_qr_id = int(row["id"])
+                            method = "ref_id"
+
+                if matched_qr_id is None:
                     rows = await _d1_all(
                         self.env.DB,
                         """
-                        SELECT ref_id, event_id, full_prefilled_text,
-                               first_scanned_at AS match_anchor_at
-                        FROM physical_qrs
-                        WHERE first_scanned_at IS NOT NULL AND expires_at > ?
-                        ORDER BY first_scanned_at DESC
+                        SELECT s.qr_id, q.full_prefilled_text, s.scanned_at
+                        FROM scan_sessions s
+                        JOIN qrs q ON q.id = s.qr_id
+                        WHERE s.expires_at > ?
+                        ORDER BY s.scanned_at DESC
                         LIMIT ?
                         """,
                         now_ts,
@@ -699,22 +705,20 @@ class Default(WorkerEntrypoint):
                         tau_minutes=tau,
                     )
                     if match:
-                        event_id = match.event_id
-                        matched_ref = match.ref_id
+                        matched_qr_id = match.qr_id
                         method = match.method
 
-                if event_id and method:
+                if matched_qr_id is not None and method:
                     await _d1_run(
                         self.env.DB,
                         """
-                        INSERT INTO leads (whatsapp_message_id, from_phone, wa_display_name, event_id, ref_id, match_method, raw_text, created_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        INSERT INTO leads (whatsapp_message_id, from_phone, wa_display_name, qr_id, match_method, raw_text, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
                         """,
                         wa_message_id,
                         from_phone,
                         wa_display_name,
-                        event_id,
-                        matched_ref or "",
+                        matched_qr_id,
                         method,
                         text,
                         now_ts,
@@ -723,11 +727,10 @@ class Default(WorkerEntrypoint):
                         self.env.DB,
                         """
                         UPDATE processed_inbound_messages
-                        SET ref_id = ?, event_id = ?, match_method = ?
+                        SET ref_id = ?, match_method = ?
                         WHERE whatsapp_message_id = ?
                         """,
-                        matched_ref or "",
-                        event_id,
+                        str(matched_qr_id),
                         method,
                         wa_message_id,
                     )

@@ -3,14 +3,12 @@ import { Plus, RefreshCw, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { QrInventoryCard } from '../components/QrInventoryCard';
 import {
-  createPhysicalQrs,
-  listPhysicalQrs,
+  createQrs,
+  listQrs,
   isAdminApiConfigured,
-  type PhysicalQrItem,
+  type QrItem,
 } from '../lib/adminApi';
 
-/** Matches seed in migrations/0001_initial.sql */
-const DEFAULT_EVENT_ID = 'evt_demo';
 const PAGE_SIZE = 12;
 const MAX_BATCH = 100;
 
@@ -19,14 +17,12 @@ export function AdminPage() {
 
   const [tab, setTab] = useState('generate');
 
-  const [eventId, setEventId] = useState(DEFAULT_EVENT_ID);
   const [quantity, setQuantity] = useState('1');
-  const [recentItems, setRecentItems] = useState<PhysicalQrItem[]>([]);
+  const [recentItems, setRecentItems] = useState<QrItem[]>([]);
   const [generateError, setGenerateError] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
 
-  const [filterEventId, setFilterEventId] = useState('');
-  const [libraryItems, setLibraryItems] = useState<PhysicalQrItem[]>([]);
+  const [libraryItems, setLibraryItems] = useState<QrItem[]>([]);
   const [libraryTotal, setLibraryTotal] = useState(0);
   const [libraryOffset, setLibraryOffset] = useState(0);
   const [libraryLoading, setLibraryLoading] = useState(false);
@@ -37,10 +33,9 @@ export function AdminPage() {
     setLibraryLoading(true);
     setLibraryError(null);
     try {
-      const { items, total } = await listPhysicalQrs({
+      const { items, total } = await listQrs({
         limit: PAGE_SIZE,
         offset: libraryOffset,
-        event_id: filterEventId.trim() || undefined,
       });
       setLibraryItems(items);
       setLibraryTotal(total);
@@ -50,7 +45,7 @@ export function AdminPage() {
     } finally {
       setLibraryLoading(false);
     }
-  }, [configured, libraryOffset, filterEventId]);
+  }, [configured, libraryOffset]);
 
   useEffect(() => {
     if (tab === 'library' && configured) {
@@ -65,19 +60,11 @@ export function AdminPage() {
       setGenerateError(`Enter a quantity between 1 and ${MAX_BATCH}`);
       return;
     }
-    const ev = eventId.trim();
-    if (!ev) {
-      setGenerateError('Event ID is required');
-      return;
-    }
 
     setGenerateError(null);
     setIsGenerating(true);
     try {
-      const { items } = await createPhysicalQrs({
-        event_id: ev,
-        count: qty,
-      });
+      const { items } = await createQrs({ count: qty });
       setRecentItems(items);
       setQuantity('1');
       if (tab === 'library') {
@@ -111,40 +98,24 @@ export function AdminPage() {
             <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm sm:p-6">
               <h2 className="text-base font-semibold text-gray-900">Provision QR codes</h2>
               <p className="mt-1 text-sm text-gray-600">
-                Creates rows in inventory and returns printable QR images (encode the redirect URL).
+                Creates permanent QR codes with sequential IDs and prefilled WhatsApp text.
               </p>
 
-              <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 sm:max-w-2xl">
-                <div>
-                  <label htmlFor="admin-event-id" className="mb-1 block text-xs font-medium text-gray-700">
-                    Event ID <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    id="admin-event-id"
-                    type="text"
-                    value={eventId}
-                    onChange={(e) => setEventId(e.target.value)}
-                    disabled={!configured}
-                    className="w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-sm focus:border-transparent focus:ring-2 focus:ring-purple-500 disabled:bg-gray-100"
-                    placeholder="evt_demo"
-                  />
-                </div>
-                <div>
-                  <label htmlFor="admin-qty" className="mb-1 block text-xs font-medium text-gray-700">
-                    Quantity <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    id="admin-qty"
-                    type="number"
-                    min={1}
-                    max={MAX_BATCH}
-                    value={quantity}
-                    onChange={(e) => setQuantity(e.target.value)}
-                    disabled={!configured}
-                    className="w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-sm focus:border-transparent focus:ring-2 focus:ring-purple-500 disabled:bg-gray-100"
-                  />
-                  <p className="mt-0.5 text-[11px] text-gray-500">Up to {MAX_BATCH} per request (worker may allow more)</p>
-                </div>
+              <div className="mt-4 sm:max-w-xs">
+                <label htmlFor="admin-qty" className="mb-1 block text-xs font-medium text-gray-700">
+                  Quantity <span className="text-red-500">*</span>
+                </label>
+                <input
+                  id="admin-qty"
+                  type="number"
+                  min={1}
+                  max={MAX_BATCH}
+                  value={quantity}
+                  onChange={(e) => setQuantity(e.target.value)}
+                  disabled={!configured}
+                  className="w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-sm focus:border-transparent focus:ring-2 focus:ring-purple-500 disabled:bg-gray-100"
+                />
+                <p className="mt-0.5 text-[11px] text-gray-500">Up to {MAX_BATCH} per request</p>
               </div>
 
               {generateError && (
@@ -174,7 +145,7 @@ export function AdminPage() {
                 <p className="mt-1 text-sm text-gray-600">Download each QR from the card below.</p>
                 <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                   {recentItems.map((item) => (
-                    <QrInventoryCard key={item.ref_id} item={item} />
+                    <QrInventoryCard key={item.id} item={item} />
                   ))}
                 </div>
               </div>
@@ -183,23 +154,7 @@ export function AdminPage() {
 
           <TabsContent value="library" className="mt-4 space-y-4 outline-none">
             <div className="flex flex-col gap-3 rounded-xl border border-gray-200 bg-white p-4 shadow-sm sm:flex-row sm:items-end sm:justify-between">
-              <div className="flex flex-1 flex-col gap-2 sm:max-w-xs">
-                <label htmlFor="library-filter-event" className="text-xs font-medium text-gray-700">
-                  Filter by event ID
-                </label>
-                <input
-                  id="library-filter-event"
-                  type="text"
-                  value={filterEventId}
-                  onChange={(e) => {
-                    setFilterEventId(e.target.value);
-                    setLibraryOffset(0);
-                  }}
-                  disabled={!configured}
-                  placeholder="Leave empty for all"
-                  className="w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-sm focus:border-transparent focus:ring-2 focus:ring-purple-500 disabled:bg-gray-100"
-                />
-              </div>
+              <div className="text-sm text-gray-600">All QR codes — permanent, reusable.</div>
               <button
                 type="button"
                 onClick={() => void loadLibrary()}
@@ -223,7 +178,7 @@ export function AdminPage() {
               </div>
             ) : libraryItems.length === 0 ? (
               <div className="rounded-lg border border-gray-200 bg-white p-12 text-center text-sm text-gray-500">
-                No QR codes in inventory yet. Use Generate to provision some.
+                No QR codes yet. Use Generate to provision some.
               </div>
             ) : (
               <>
@@ -235,7 +190,7 @@ export function AdminPage() {
                 </div>
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                   {libraryItems.map((item) => (
-                    <QrInventoryCard key={item.ref_id} item={item} />
+                    <QrInventoryCard key={item.id} item={item} />
                   ))}
                 </div>
                 <div className="flex items-center justify-center gap-2 pt-2">

@@ -20,7 +20,11 @@ max_batch_timeout = 5
 max_retries = 5
 
 [vars]
-# Match window after first GET /r/{ref_id} (default 3h); physical_qrs.expires_at
+# WhatsApp prefilled text template — passed to build_prefilled_text()
+WA_GREETING = "Hey!"
+WA_CONTEXT_TEXT = "Regarding the offer"
+WA_REQUEST_TEXT = "I would like more information"
+# TTL for scan_sessions after a QR is scanned (default 3h)
 SCAN_TTL_SECONDS = "10800"
 # LCS fuzzy match tuning
 LCS_MIN_SCORE = "0.35"
@@ -38,7 +42,7 @@ ADMIN_LIST_MAX_LIMIT = "500"
 # Optional [vars]: MSG91_WEBHOOK_SECRET_HEADER = "X-Webhook-Secret"
 # Optional [vars]: MSG91_SESSION_SEND_URL = "https://api.msg91.com/api/v5/whatsapp/..."
 #
-# Admin JSON API (POST/GET /api/physical-qrs):
+# Admin JSON API (POST/GET /api/qrs):
 #   wrangler secret put ADMIN_API_SECRET
 # Optional [vars]: ADMIN_API_SECRET_HEADER, ADMIN_PROVISION_MAX_COUNT, ADMIN_LIST_MAX_LIMIT
 

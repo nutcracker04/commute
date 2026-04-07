@@ -58,16 +58,14 @@ def lcs_length(a: str, b: str) -> int:
 
 @dataclass
 class MatchCandidate:
-    ref_id: str
-    event_id: str
+    qr_id: int
     full_prefilled_text: str
-    anchor_at: int  # unix seconds; physical_qrs uses first_scanned_at as match_anchor_at
+    anchor_at: int  # unix seconds; scan_sessions.scanned_at
 
 
 @dataclass
 class MatchResult:
-    ref_id: str
-    event_id: str
+    qr_id: int
     final_score: float
     raw_score: float
     method: str  # "lcs"
@@ -112,8 +110,7 @@ def pick_best_match(
         return None
 
     return MatchResult(
-        ref_id=best_c.ref_id,
-        event_id=best_c.event_id,
+        qr_id=best_c.qr_id,
         final_score=best_final,
         raw_score=best_raw,
         method="lcs",
@@ -121,14 +118,15 @@ def pick_best_match(
 
 
 def candidate_from_row(row: dict[str, Any]) -> MatchCandidate:
-    anchor = row.get("match_anchor_at")
+    anchor = row.get("scanned_at")
+    if anchor is None:
+        anchor = row.get("match_anchor_at")
     if anchor is None:
         anchor = row.get("created_at")
     if anchor is None:
-        raise KeyError("row must include match_anchor_at or created_at")
+        raise KeyError("row must include scanned_at, match_anchor_at, or created_at")
     return MatchCandidate(
-        ref_id=str(row["ref_id"]),
-        event_id=str(row["event_id"]),
+        qr_id=int(row["qr_id"]),
         full_prefilled_text=str(row["full_prefilled_text"]),
         anchor_at=int(anchor),
     )
