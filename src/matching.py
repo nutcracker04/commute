@@ -156,7 +156,7 @@ class MatchCandidate:
     qr_id: int
     full_prefilled_text: str
     anchor_at: int  # unix seconds; scan_sessions.scanned_at
-    session_id: int | None = None  # scan_sessions.id — None for legacy/test rows
+    session_id: str | None = None  # KV session id (uuid hex) for LCS claim path
 
 
 @dataclass
@@ -165,7 +165,7 @@ class MatchResult:
     final_score: float
     raw_score: float
     method: str  # "lcs"
-    session_id: int | None = None  # the exact scan_sessions row that was matched
+    session_id: str | None = None  # KV session id when method is lcs
 
 
 def pick_best_match(
@@ -264,9 +264,14 @@ def candidate_from_row(row: dict[str, Any]) -> MatchCandidate:
     if anchor is None:
         raise KeyError("row must include scanned_at, match_anchor_at, or created_at")
     sid = row.get("session_id")
+    session_id: str | None
+    if sid is None:
+        session_id = None
+    else:
+        session_id = str(sid)
     return MatchCandidate(
         qr_id=int(row["qr_id"]),
         full_prefilled_text=str(row["full_prefilled_text"]),
         anchor_at=int(anchor),
-        session_id=int(sid) if sid is not None else None,
+        session_id=session_id,
     )

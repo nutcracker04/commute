@@ -6,6 +6,7 @@ export interface Lead {
   name: string;
   contact: string;
   qrRefId: string;
+  couponCode: string;
 }
 
 interface LeadTableProps {
@@ -53,6 +54,9 @@ export function LeadTable({ leads, currentPage, itemsPerPage }: LeadTableProps) 
                 {lead.qrRefId}
               </div>
             </div>
+            {lead.couponCode ? (
+              <div className="mt-1 text-xs font-mono text-purple-800">Coupon: {lead.couponCode}</div>
+            ) : null}
           </div>
         ))}
       </div>
@@ -74,6 +78,9 @@ export function LeadTable({ leads, currentPage, itemsPerPage }: LeadTableProps) 
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                 QR Ref ID
               </th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                Coupon
+              </th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200">
@@ -91,6 +98,9 @@ export function LeadTable({ leads, currentPage, itemsPerPage }: LeadTableProps) 
                 </td>
                 <td className="px-6 py-3 whitespace-nowrap text-sm font-mono text-gray-900">
                   {lead.qrRefId}
+                </td>
+                <td className="px-6 py-3 whitespace-nowrap text-sm font-mono text-gray-900">
+                  {lead.couponCode || '—'}
                 </td>
               </tr>
             ))}

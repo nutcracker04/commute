@@ -6,11 +6,19 @@ from __future__ import annotations
 
 import json
 import time
+import uuid
 from typing import Any
 from urllib.parse import parse_qs, quote, urlparse
 
 from pyodide.ffi import to_js
 
+from dlc_cron import run_weekly_dlc_for_previous_week
+from dlc_increment import increment_dlc_for_lead
+from coupon import (
+    fetch_coupon_prefix,
+    format_coupon_spaced,
+    generate_coupon_code,
+)
 from integration_meta import integration_document
 from matching import (
     candidate_from_row,
@@ -19,6 +27,14 @@ from matching import (
 )
 from prefill import build_prefilled_text
 from payload import iter_webhook_inbound_jobs
+from scan_sessions_kv import (
+    inbound_fallback_claim,
+    inbound_fallback_release,
+    ss_claim_session,
+    ss_load_lcs_candidates,
+    ss_merge_index_batch,
+    ss_put_session,
+)
 
 try:
     from workers import Response, WorkerEntrypoint
@@ -129,7 +145,7 @@ def _admin_api_check(request: Any, env: Any) -> Response | None:
 
 _CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, X-Admin-Key, Authorization",
     "Access-Control-Max-Age": "86400",
 }
@@ -254,6 +270,30 @@ async def _d1_last_insert_rowid(db: Any, sql: str, *bind_args: Any) -> int | Non
     return int(rowid) if rowid is not None else None
 
 
+_DEFAULT_COUPON_WA_TEMPLATE = """Here's your coupon — use it at checkout:
+
+*{code}*"""
+
+
+async def _allocate_unique_coupon_code(
+    db: Any,
+    prefix: str,
+    random_length: int,
+    *,
+    max_attempts: int = 5,
+) -> str:
+    for _ in range(max_attempts):
+        code = generate_coupon_code(prefix, random_length=random_length)
+        row = await _d1_first(
+            db,
+            "SELECT 1 AS ok FROM leads WHERE coupon_code_sent = ? LIMIT 1",
+            code,
+        )
+        if not row:
+            return code
+    return generate_coupon_code(prefix, random_length=random_length)
+
+
 class Default(WorkerEntrypoint):
     async def fetch(self, request):  # type: ignore[override]
         url = str(request.url)
@@ -301,6 +341,31 @@ class Default(WorkerEntrypoint):
                 return await self._handle_api_leads_list(request, url)
             return Response("Method not allowed", status=405)
 
+        if path == "/api/drivers":
+            if method == "GET":
+                return await self._handle_api_drivers_list(request, url)
+            if method == "POST":
+                return await self._handle_api_drivers_create(request)
+            return Response("Method not allowed", status=405)
+
+        if path == "/api/weeks":
+            if method == "GET":
+                return await self._handle_api_weeks_list(request, url)
+            return Response("Method not allowed", status=405)
+
+        if path == "/api/dlc":
+            if method == "GET":
+                return await self._handle_api_dlc_list(request, url)
+            return Response("Method not allowed", status=405)
+
+        if path == "/api/admin/run-dlc":
+            if method == "POST":
+                return await self._handle_api_admin_run_dlc(request)
+            return Response("Method not allowed", status=405)
+
+        if path.startswith("/api/drivers/"):
+            return await self._handle_api_drivers_subpath(request, method, path)
+
         return Response("Not found", status=404)
 
     @staticmethod
@@ -333,20 +398,33 @@ class Default(WorkerEntrypoint):
             return Response("WhatsApp number not configured", status=503)
 
         now = int(time.time())
-        ttl = _int_env(self.env, "SCAN_TTL_SECONDS", 10800)
+        ttl = _int_env(self.env, "SCAN_TTL_SECONDS", 21600)
         expires_at = now + ttl
+        session_id = uuid.uuid4().hex
 
-        await _d1_run(
-            self.env.DB,
-            """
-            INSERT INTO scan_sessions (qr_id, full_text, scanned_at, expires_at, claimed_at)
-            VALUES (?, ?, ?, ?, NULL)
-            """,
-            qr_id,
-            full_text,
-            now,
-            expires_at,
+        await ss_put_session(
+            self.env.SCAN_KV,
+            session_id=session_id,
+            qr_id=qr_id,
+            full_text=full_text,
+            scanned_at=now,
+            expires_at=expires_at,
+            ttl_seconds=ttl,
         )
+        try:
+            await self.env.SESSION_INDEX_QUEUE.send(
+                to_js(
+                    {
+                        "_kind": "session_index",
+                        "op": "add",
+                        "id": session_id,
+                        "scanned_at": now,
+                        "expires_at": expires_at,
+                    }
+                )
+            )
+        except Exception:
+            return Response("Session index queue unavailable", status=503)
 
         wa_url = f"https://wa.me/{phone}?text={quote(full_text, safe='')}"
         return Response("", status=302, headers={"Location": wa_url})
@@ -406,11 +484,10 @@ class Default(WorkerEntrypoint):
             items.append(
                 {
                     "id": new_id,
+                    "ref_id": new_id,
                     "full_prefilled_text": full_text,
                     "redirect_url": f"{base}/r/{new_id}",
                     "provisioned_at": now,
-                    "last_scanned_at": None,
-                    "expires_at": None,
                 }
             )
 
@@ -452,15 +529,8 @@ class Default(WorkerEntrypoint):
         rows = await _d1_all(
             self.env.DB,
             """
-            SELECT q.id, q.full_prefilled_text, q.provisioned_at,
-                   s.scanned_at AS last_scanned_at, s.expires_at
+            SELECT q.id, q.full_prefilled_text, q.provisioned_at
             FROM qrs q
-            LEFT JOIN scan_sessions s ON s.qr_id = q.id
-              AND s.id = (
-                SELECT id FROM scan_sessions
-                WHERE qr_id = q.id
-                ORDER BY scanned_at DESC LIMIT 1
-              )
             ORDER BY q.id DESC
             LIMIT ? OFFSET ?
             """,
@@ -475,16 +545,11 @@ class Default(WorkerEntrypoint):
             items.append(
                 {
                     "id": qid,
+                    "ref_id": qid,
                     "full_prefilled_text": str(r["full_prefilled_text"]),
                     "redirect_url": f"{base}/r/{qid}",
                     "provisioned_at": int(r["provisioned_at"])
                     if r.get("provisioned_at") is not None
-                    else None,
-                    "last_scanned_at": int(r["last_scanned_at"])
-                    if r.get("last_scanned_at") is not None
-                    else None,
-                    "expires_at": int(r["expires_at"])
-                    if r.get("expires_at") is not None
                     else None,
                 }
             )
@@ -506,7 +571,7 @@ class Default(WorkerEntrypoint):
             vals = q.get(key, [])
             return str(vals[0]).strip() if vals and str(vals[0]).strip() else None
 
-        filter_qr = _first("qr_id")
+        filter_ref = _first("ref_id") or _first("qr_id")
         filter_phone = _first("from_phone")
         filter_start = _first("start_ts")
         filter_end = _first("end_ts")
@@ -532,12 +597,12 @@ class Default(WorkerEntrypoint):
         where_parts: list[str] = []
         bind_vals: list[Any] = []
 
-        if filter_qr:
+        if filter_ref:
             try:
-                where_parts.append("l.qr_id = ?")
-                bind_vals.append(int(filter_qr))
+                where_parts.append("l.ref_id = ?")
+                bind_vals.append(int(filter_ref))
             except ValueError:
-                return _json_response({"error": "invalid qr_id"}, status=400)
+                return _json_response({"error": "invalid ref_id"}, status=400)
         if filter_phone:
             where_parts.append("l.from_phone = ?")
             bind_vals.append(filter_phone)
@@ -566,8 +631,9 @@ class Default(WorkerEntrypoint):
         rows = await _d1_all(
             self.env.DB,
             f"""
-            SELECT l.id, l.from_phone, l.wa_display_name, l.qr_id,
-                   l.match_method, l.raw_text, l.created_at
+            SELECT l.id, l.from_phone, l.wa_display_name, l.ref_id,
+                   l.match_method, l.raw_text, l.created_at,
+                   l.coupon_code_sent
             FROM leads l
             {where_sql}
             ORDER BY l.created_at DESC
@@ -583,15 +649,578 @@ class Default(WorkerEntrypoint):
                 "id": r["id"],
                 "from_phone": r["from_phone"],
                 "wa_display_name": r.get("wa_display_name"),
-                "qr_id": r.get("qr_id"),
+                "ref_id": r.get("ref_id"),
                 "match_method": r["match_method"],
                 "created_at": r["created_at"],
+                "coupon_code_sent": r.get("coupon_code_sent"),
             }
             for r in rows
         ]
 
         return _json_response(
             {"items": items, "total": total, "limit": limit, "offset": offset}
+        )
+
+    def _r2_object_public_url(self, key: str) -> str:
+        base = _str_env(self.env, "R2_PUBLIC_BASE", "").rstrip("/")
+        if base:
+            return f"{base}/{key}"
+        return key
+
+    async def _request_body_bytes(self, request: Any) -> bytes:
+        ab = await request.arrayBuffer()
+        if hasattr(ab, "to_bytes"):
+            return ab.to_bytes()
+        return bytes(ab)
+
+    @staticmethod
+    def _parse_identity_urls_json(raw: Any) -> list[str]:
+        if not raw:
+            return []
+        if isinstance(raw, list):
+            return [str(x) for x in raw if x]
+        try:
+            parsed = json.loads(str(raw))
+            if isinstance(parsed, list):
+                return [str(x) for x in parsed if x]
+        except json.JSONDecodeError:
+            pass
+        return []
+
+    async def _handle_api_drivers_list(self, request, url: str) -> Response:
+        bad = _admin_api_check(request, self.env)
+        if bad is not None:
+            return bad
+
+        parsed = urlparse(url)
+        q = parse_qs(parsed.query or "")
+
+        def _first(key: str) -> str | None:
+            vals = q.get(key, [])
+            return str(vals[0]).strip() if vals and str(vals[0]).strip() else None
+
+        try:
+            limit = int(_first("limit") or "100")
+        except ValueError:
+            return _json_response({"error": "invalid limit"}, status=400)
+        try:
+            offset = int(_first("offset") or "0")
+        except ValueError:
+            return _json_response({"error": "invalid offset"}, status=400)
+
+        max_limit = _int_env(self.env, "ADMIN_LIST_MAX_LIMIT", 500)
+        if limit < 1 or limit > max_limit:
+            return _json_response(
+                {"error": f"limit must be between 1 and {max_limit}"},
+                status=400,
+            )
+        if offset < 0:
+            return _json_response({"error": "offset must be >= 0"}, status=400)
+
+        count_row = await _d1_first(self.env.DB, "SELECT COUNT(*) AS n FROM drivers")
+        total = int(count_row["n"]) if count_row else 0
+
+        rows = await _d1_all(
+            self.env.DB,
+            """
+            SELECT id, external_ref, driver_code, name, phone, qr_ref_id,
+                   qr_asset_url, upi_qr_asset_url, identity_asset_urls, created_at
+            FROM drivers
+            ORDER BY id DESC
+            LIMIT ? OFFSET ?
+            """,
+            limit,
+            offset,
+        )
+
+        items = []
+        for r in rows:
+            items.append(
+                {
+                    "id": int(r["id"]),
+                    "external_ref": r.get("external_ref"),
+                    "driver_code": r.get("driver_code"),
+                    "driver_id": r.get("driver_code"),
+                    "name": r["name"],
+                    "phone": r["phone"],
+                    "qr_ref_id": int(r["qr_ref_id"])
+                    if r.get("qr_ref_id") is not None
+                    else None,
+                    "qr_asset_url": r.get("qr_asset_url"),
+                    "upi_qr_asset_url": r.get("upi_qr_asset_url"),
+                    "identity_asset_urls": self._parse_identity_urls_json(
+                        r.get("identity_asset_urls")
+                    ),
+                    "created_at": int(r["created_at"])
+                    if r.get("created_at") is not None
+                    else None,
+                }
+            )
+
+        return _json_response(
+            {"items": items, "total": total, "limit": limit, "offset": offset}
+        )
+
+    async def _handle_api_drivers_create(self, request) -> Response:
+        bad = _admin_api_check(request, self.env)
+        if bad is not None:
+            return bad
+
+        body_text = await request.text()
+        try:
+            payload = json.loads(body_text) if body_text.strip() else {}
+        except json.JSONDecodeError:
+            return _json_response({"error": "invalid JSON"}, status=400)
+        if not isinstance(payload, dict):
+            return _json_response({"error": "body must be a JSON object"}, status=400)
+
+        name = str(payload.get("name") or "").strip()
+        phone = str(payload.get("phone") or "").strip()
+        if not name or not phone:
+            return _json_response({"error": "name and phone are required"}, status=400)
+
+        external_ref = str(payload.get("external_ref") or "").strip() or None
+        driver_code = str(payload.get("driver_code") or "").strip() or None
+        qr_ref_id: int | None = None
+        if payload.get("qr_ref_id") is not None:
+            try:
+                qr_ref_id = int(payload.get("qr_ref_id"))
+            except (TypeError, ValueError):
+                return _json_response({"error": "invalid qr_ref_id"}, status=400)
+            qrow = await _d1_first(
+                self.env.DB, "SELECT id FROM qrs WHERE id = ?", qr_ref_id
+            )
+            if not qrow:
+                return _json_response({"error": "qr_ref_id not found in qrs"}, status=400)
+            taken = await _d1_first(
+                self.env.DB, "SELECT id FROM drivers WHERE qr_ref_id = ?", qr_ref_id
+            )
+            if taken:
+                return _json_response(
+                    {"error": "qr_ref_id already linked to another driver"}, status=409
+                )
+
+        now = int(time.time())
+
+        did = await _d1_last_insert_rowid(
+            self.env.DB,
+            """
+            INSERT INTO drivers (external_ref, driver_code, name, phone, qr_ref_id, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            external_ref,
+            driver_code,
+            name,
+            phone,
+            qr_ref_id,
+            now,
+        )
+        if did is None:
+            return _json_response({"error": "failed to create driver"}, status=500)
+
+        return _json_response(
+            {
+                "id": did,
+                "external_ref": external_ref,
+                "driver_code": driver_code,
+                "qr_ref_id": qr_ref_id,
+                "name": name,
+                "phone": phone,
+                "created_at": now,
+            },
+            status=201,
+        )
+
+    async def _handle_api_drivers_patch(self, request, driver_id: int) -> Response:
+        body_text = await request.text()
+        try:
+            payload = json.loads(body_text) if body_text.strip() else {}
+        except json.JSONDecodeError:
+            return _json_response({"error": "invalid JSON"}, status=400)
+        if not isinstance(payload, dict):
+            return _json_response({"error": "body must be a JSON object"}, status=400)
+
+        row = await _d1_first(
+            self.env.DB, "SELECT id FROM drivers WHERE id = ?", driver_id
+        )
+        if not row:
+            return _json_response({"error": "not found"}, status=404)
+
+        sets: list[str] = []
+        vals: list[Any] = []
+        if "name" in payload:
+            sets.append("name = ?")
+            vals.append(str(payload.get("name") or "").strip())
+        if "phone" in payload:
+            sets.append("phone = ?")
+            vals.append(str(payload.get("phone") or "").strip())
+        if "external_ref" in payload:
+            sets.append("external_ref = ?")
+            v = payload.get("external_ref")
+            vals.append(None if v is None else str(v).strip() or None)
+        if "driver_code" in payload:
+            sets.append("driver_code = ?")
+            v = payload.get("driver_code")
+            vals.append(None if v is None else str(v).strip() or None)
+        if "qr_asset_url" in payload:
+            sets.append("qr_asset_url = ?")
+            v = payload.get("qr_asset_url")
+            vals.append(None if v is None else str(v).strip() or None)
+        if "identity_asset_urls" in payload:
+            v = payload.get("identity_asset_urls")
+            if v is None:
+                sets.append("identity_asset_urls = ?")
+                vals.append(None)
+            elif isinstance(v, list):
+                sets.append("identity_asset_urls = ?")
+                vals.append(json.dumps([str(x) for x in v if x]))
+            else:
+                return _json_response({"error": "identity_asset_urls must be a list"}, status=400)
+        if "qr_ref_id" in payload:
+            v = payload.get("qr_ref_id")
+            if v is None:
+                sets.append("qr_ref_id = ?")
+                vals.append(None)
+            else:
+                try:
+                    qrid = int(v)
+                except (TypeError, ValueError):
+                    return _json_response({"error": "invalid qr_ref_id"}, status=400)
+                qrow = await _d1_first(
+                    self.env.DB, "SELECT id FROM qrs WHERE id = ?", qrid
+                )
+                if not qrow:
+                    return _json_response({"error": "qr_ref_id not found"}, status=400)
+                taken = await _d1_first(
+                    self.env.DB,
+                    "SELECT id FROM drivers WHERE qr_ref_id = ? AND id != ?",
+                    qrid,
+                    driver_id,
+                )
+                if taken:
+                    return _json_response(
+                        {"error": "qr_ref_id already linked to another driver"},
+                        status=409,
+                    )
+                sets.append("qr_ref_id = ?")
+                vals.append(qrid)
+        if "upi_qr_asset_url" in payload:
+            v = payload.get("upi_qr_asset_url")
+            sets.append("upi_qr_asset_url = ?")
+            vals.append(None if v is None else str(v).strip() or None)
+
+        if not sets:
+            return _json_response({"error": "no fields to update"}, status=400)
+
+        sql = "UPDATE drivers SET " + ", ".join(sets) + " WHERE id = ?"
+        vals.append(driver_id)
+        await _d1_run(self.env.DB, sql, *vals)
+        return _json_response({"ok": True, "id": driver_id})
+
+    async def _handle_driver_qr_image_put(self, request, driver_id: int) -> Response:
+        bucket = getattr(self.env, "DRIVER_ASSETS", None)
+        if bucket is None:
+            return _json_response({"error": "R2 not configured"}, status=503)
+
+        row = await _d1_first(
+            self.env.DB, "SELECT id FROM drivers WHERE id = ?", driver_id
+        )
+        if not row:
+            return _json_response({"error": "not found"}, status=404)
+
+        ct = _header_get(request.headers, "Content-Type") or "application/octet-stream"
+        body = await self._request_body_bytes(request)
+        if not body:
+            return _json_response({"error": "empty body"}, status=400)
+
+        ext = "bin"
+        if "png" in ct.lower():
+            ext = "png"
+        elif "jpeg" in ct.lower() or "jpg" in ct.lower():
+            ext = "jpg"
+        elif "webp" in ct.lower():
+            ext = "webp"
+        key = f"drivers/{driver_id}/qr.{ext}"
+        await bucket.put(key, body, {"httpMetadata": {"contentType": ct}})
+        url = self._r2_object_public_url(key)
+        await _d1_run(
+            self.env.DB,
+            "UPDATE drivers SET qr_asset_url = ? WHERE id = ?",
+            url,
+            driver_id,
+        )
+        return _json_response({"ok": True, "qr_asset_url": url, "key": key})
+
+    async def _handle_driver_upi_qr_image_put(self, request, driver_id: int) -> Response:
+        bucket = getattr(self.env, "DRIVER_ASSETS", None)
+        if bucket is None:
+            return _json_response({"error": "R2 not configured"}, status=503)
+
+        row = await _d1_first(
+            self.env.DB, "SELECT id FROM drivers WHERE id = ?", driver_id
+        )
+        if not row:
+            return _json_response({"error": "not found"}, status=404)
+
+        ct = _header_get(request.headers, "Content-Type") or "application/octet-stream"
+        body = await self._request_body_bytes(request)
+        if not body:
+            return _json_response({"error": "empty body"}, status=400)
+
+        ext = "bin"
+        if "png" in ct.lower():
+            ext = "png"
+        elif "jpeg" in ct.lower() or "jpg" in ct.lower():
+            ext = "jpg"
+        elif "webp" in ct.lower():
+            ext = "webp"
+        key = f"drivers/{driver_id}/upi-qr.{ext}"
+        await bucket.put(key, body, {"httpMetadata": {"contentType": ct}})
+        url = self._r2_object_public_url(key)
+        await _d1_run(
+            self.env.DB,
+            "UPDATE drivers SET upi_qr_asset_url = ? WHERE id = ?",
+            url,
+            driver_id,
+        )
+        return _json_response({"ok": True, "upi_qr_asset_url": url, "key": key})
+
+    async def _handle_driver_identity_image_put(self, request, driver_id: int) -> Response:
+        bucket = getattr(self.env, "DRIVER_ASSETS", None)
+        if bucket is None:
+            return _json_response({"error": "R2 not configured"}, status=503)
+
+        row = await _d1_first(
+            self.env.DB,
+            "SELECT identity_asset_urls FROM drivers WHERE id = ?",
+            driver_id,
+        )
+        if not row:
+            return _json_response({"error": "not found"}, status=404)
+
+        ct = _header_get(request.headers, "Content-Type") or "application/octet-stream"
+        body = await self._request_body_bytes(request)
+        if not body:
+            return _json_response({"error": "empty body"}, status=400)
+
+        ext = "bin"
+        if "png" in ct.lower():
+            ext = "png"
+        elif "jpeg" in ct.lower() or "jpg" in ct.lower():
+            ext = "jpg"
+        elif "pdf" in ct.lower():
+            ext = "pdf"
+
+        uid = uuid.uuid4().hex[:12]
+        key = f"drivers/{driver_id}/id-{uid}.{ext}"
+        await bucket.put(key, body, {"httpMetadata": {"contentType": ct}})
+        url = self._r2_object_public_url(key)
+        urls = self._parse_identity_urls_json(row.get("identity_asset_urls"))
+        urls.append(url)
+        await _d1_run(
+            self.env.DB,
+            "UPDATE drivers SET identity_asset_urls = ? WHERE id = ?",
+            json.dumps(urls),
+            driver_id,
+        )
+        return _json_response(
+            {"ok": True, "identity_asset_urls": urls, "added": url, "key": key}
+        )
+
+    async def _handle_api_drivers_subpath(
+        self, request, method: str, path: str
+    ) -> Response:
+        bad = _admin_api_check(request, self.env)
+        if bad is not None:
+            return bad
+
+        rest = path.removeprefix("/api/drivers/").strip("/")
+        if not rest:
+            return Response("Not found", status=404)
+        parts = rest.split("/")
+        try:
+            did = int(parts[0])
+        except ValueError:
+            return _json_response({"error": "invalid driver id"}, status=400)
+
+        if len(parts) == 1:
+            if method == "PATCH":
+                return await self._handle_api_drivers_patch(request, did)
+            return Response("Method not allowed", status=405)
+
+        if len(parts) == 2 and parts[1] == "qr-image":
+            if method == "PUT":
+                return await self._handle_driver_qr_image_put(request, did)
+            return Response("Method not allowed", status=405)
+
+        if len(parts) == 2 and parts[1] == "upi-qr-image":
+            if method == "PUT":
+                return await self._handle_driver_upi_qr_image_put(request, did)
+            return Response("Method not allowed", status=405)
+
+        if len(parts) == 2 and parts[1] == "identity-image":
+            if method == "PUT":
+                return await self._handle_driver_identity_image_put(request, did)
+            return Response("Method not allowed", status=405)
+
+        return Response("Not found", status=404)
+
+    async def _handle_api_weeks_list(self, request, url: str) -> Response:
+        bad = _admin_api_check(request, self.env)
+        if bad is not None:
+            return bad
+
+        parsed = urlparse(url)
+        q = parse_qs(parsed.query or "")
+
+        def _first(key: str) -> str | None:
+            vals = q.get(key, [])
+            return str(vals[0]).strip() if vals and str(vals[0]).strip() else None
+
+        try:
+            limit = int(_first("limit") or "100")
+        except ValueError:
+            return _json_response({"error": "invalid limit"}, status=400)
+        try:
+            offset = int(_first("offset") or "0")
+        except ValueError:
+            return _json_response({"error": "invalid offset"}, status=400)
+
+        max_limit = _int_env(self.env, "ADMIN_LIST_MAX_LIMIT", 500)
+        if limit < 1 or limit > max_limit:
+            return _json_response(
+                {"error": f"limit must be between 1 and {max_limit}"},
+                status=400,
+            )
+
+        count_row = await _d1_first(self.env.DB, "SELECT COUNT(*) AS n FROM weeks")
+        total = int(count_row["n"]) if count_row else 0
+
+        rows = await _d1_all(
+            self.env.DB,
+            """
+            SELECT id, start_at, end_at FROM weeks
+            ORDER BY id DESC
+            LIMIT ? OFFSET ?
+            """,
+            limit,
+            offset,
+        )
+
+        items = [
+            {
+                "id": int(r["id"]),
+                "start_at": int(r["start_at"]),
+                "end_at": int(r["end_at"]),
+            }
+            for r in rows
+        ]
+        return _json_response(
+            {"items": items, "total": total, "limit": limit, "offset": offset}
+        )
+
+    async def _handle_api_dlc_list(self, request, url: str) -> Response:
+        bad = _admin_api_check(request, self.env)
+        if bad is not None:
+            return bad
+
+        parsed = urlparse(url)
+        q = parse_qs(parsed.query or "")
+
+        def _first(key: str) -> str | None:
+            vals = q.get(key, [])
+            return str(vals[0]).strip() if vals and str(vals[0]).strip() else None
+
+        week_id_raw = _first("week_id")
+        try:
+            limit = int(_first("limit") or "200")
+        except ValueError:
+            return _json_response({"error": "invalid limit"}, status=400)
+        try:
+            offset = int(_first("offset") or "0")
+        except ValueError:
+            return _json_response({"error": "invalid offset"}, status=400)
+
+        max_limit = _int_env(self.env, "ADMIN_LIST_MAX_LIMIT", 500)
+        if limit < 1 or limit > max_limit:
+            return _json_response(
+                {"error": f"limit must be between 1 and {max_limit}"},
+                status=400,
+            )
+
+        where_sql = ""
+        bind: list[Any] = []
+        if week_id_raw:
+            try:
+                where_sql = "WHERE d.week_id = ?"
+                bind.append(int(week_id_raw))
+            except ValueError:
+                return _json_response({"error": "invalid week_id"}, status=400)
+
+        count_row = await _d1_first(
+            self.env.DB,
+            f"SELECT COUNT(*) AS n FROM driver_lead_counts d {where_sql}",
+            *bind,
+        )
+        total = int(count_row["n"]) if count_row else 0
+
+        rows = await _d1_all(
+            self.env.DB,
+            f"""
+            SELECT d.id, d.ref_id, d.week_id, d.lead_count, d.computed_at,
+                   w.start_at, w.end_at
+            FROM driver_lead_counts d
+            JOIN weeks w ON w.id = d.week_id
+            {where_sql}
+            ORDER BY d.week_id DESC, d.ref_id ASC
+            LIMIT ? OFFSET ?
+            """,
+            *bind,
+            limit,
+            offset,
+        )
+
+        items = [
+            {
+                "id": int(r["id"]),
+                "ref_id": int(r["ref_id"]),
+                "week_id": int(r["week_id"]),
+                "lead_count": int(r["lead_count"]),
+                "computed_at": int(r["computed_at"]),
+                "week_start_at": int(r["start_at"]),
+                "week_end_at": int(r["end_at"]),
+            }
+            for r in rows
+        ]
+        return _json_response(
+            {"items": items, "total": total, "limit": limit, "offset": offset}
+        )
+
+    async def _handle_api_admin_run_dlc(self, request) -> Response:
+        bad = _admin_api_check(request, self.env)
+        if bad is not None:
+            return bad
+
+        now_ts = int(time.time())
+        result = await run_weekly_dlc_for_previous_week(
+            self.env.DB,
+            self.env,
+            now_ts=now_ts,
+            d1_first=_d1_first,
+            d1_all=_d1_all,
+            d1_run=_d1_run,
+        )
+        return _json_response(result, status=200 if result.get("ok") else 500)
+
+    async def scheduled(self, *args, **kwargs):  # type: ignore[override]
+        now_ts = int(time.time())
+        await run_weekly_dlc_for_previous_week(
+            self.env.DB,
+            self.env,
+            now_ts=now_ts,
+            d1_first=_d1_first,
+            d1_all=_d1_all,
+            d1_run=_d1_run,
         )
 
     async def _handle_webhook_get(self) -> Response:
@@ -636,6 +1265,27 @@ class Default(WorkerEntrypoint):
 
     async def queue(self, batch, env=None, ctx=None):  # type: ignore[override]
         now_ts = int(time.time())
+
+        # Session index queue: merge all adds in one KV write.
+        if batch.messages:
+            first = batch.messages[0].body
+            if hasattr(first, "to_py"):
+                py0 = first.to_py()
+                first = py0 if isinstance(py0, dict) else {}
+            if isinstance(first, dict) and first.get("_kind") == "session_index":
+                adds: list[dict[str, Any]] = []
+                for message in batch.messages:
+                    body = message.body
+                    if hasattr(body, "to_py"):
+                        py = body.to_py()
+                        body = py if isinstance(py, dict) else {}
+                    if isinstance(body, dict):
+                        adds.append(body)
+                await ss_merge_index_batch(self.env.SCAN_KV, adds)
+                for message in batch.messages:
+                    message.ack()
+                return
+
         min_score = _float_env(self.env, "LCS_MIN_SCORE", 0.35)
         min_gap = _float_env(self.env, "LCS_MIN_GAP", 0.08)
         tau = _float_env(self.env, "LCS_RECENCY_TAU_MINUTES", 60.0)
@@ -665,25 +1315,10 @@ class Default(WorkerEntrypoint):
                 message.ack()
                 continue
 
-            inserted = await _d1_run_changes(
-                self.env.DB,
-                """
-                INSERT OR IGNORE INTO processed_inbound_messages (whatsapp_message_id, from_phone, processed_at)
-                VALUES (?, ?, ?)
-                """,
-                wa_message_id,
-                from_phone,
-                now_ts,
-            )
-            if inserted == 0:
-                message.ack()
-                continue
-
-            claimed = True
             try:
                 ref = extract_ref_id(text)
                 matched_qr_id: int | None = None
-                matched_session_id: int | None = None
+                matched_session_id: str | None = None
                 method: str | None = None
 
                 if ref:
@@ -703,21 +1338,12 @@ class Default(WorkerEntrypoint):
                             method = "ref_id"
 
                 if matched_qr_id is None:
-                    rows = await _d1_all(
-                        self.env.DB,
-                        """
-                        SELECT s.id AS session_id, s.qr_id,
-                               s.full_text AS full_prefilled_text, s.scanned_at
-                        FROM scan_sessions s
-                        WHERE s.expires_at > ?
-                          AND s.claimed_at IS NULL
-                        ORDER BY s.scanned_at DESC
-                        LIMIT ?
-                        """,
-                        now_ts,
-                        max_cand,
+                    raw_rows = await ss_load_lcs_candidates(
+                        self.env.SCAN_KV,
+                        now_ts=now_ts,
+                        max_candidates=max_cand,
                     )
-                    candidates = [candidate_from_row(r) for r in rows]
+                    candidates = [candidate_from_row(r) for r in raw_rows]
                     match = pick_best_match(
                         text,
                         candidates,
@@ -734,10 +1360,15 @@ class Default(WorkerEntrypoint):
                         matched_session_id = match.session_id
 
                 if matched_qr_id is not None and method:
-                    await _d1_run(
+                    coupon_prefix = fetch_coupon_prefix(self.env)
+                    rand_len = _int_env(self.env, "COUPON_RANDOM_LENGTH", 6)
+                    changes = await _d1_run_changes(
                         self.env.DB,
                         """
-                        INSERT INTO leads (whatsapp_message_id, from_phone, wa_display_name, qr_id, match_method, raw_text, created_at)
+                        INSERT OR IGNORE INTO leads (
+                          whatsapp_message_id, from_phone, wa_display_name, ref_id,
+                          match_method, raw_text, created_at
+                        )
                         VALUES (?, ?, ?, ?, ?, ?, ?)
                         """,
                         wa_message_id,
@@ -748,37 +1379,81 @@ class Default(WorkerEntrypoint):
                         text,
                         now_ts,
                     )
-                    await _d1_run(
+                    row = await _d1_first(
                         self.env.DB,
                         """
-                        UPDATE processed_inbound_messages
-                        SET ref_id = ?, match_method = ?
+                        SELECT id, coupon_code_sent FROM leads
                         WHERE whatsapp_message_id = ?
                         """,
-                        str(matched_qr_id),
-                        method,
                         wa_message_id,
                     )
-                    # Claim the specific session row so it is excluded from future
-                    # LCS matching. Each scan now has its own row (id PK), so claiming
-                    # one person's session does not affect another person who scanned
-                    # the same QR. ref_id matches need no claim.
-                    if method == "lcs" and matched_session_id is not None:
-                        await _d1_run(
+                    if not row:
+                        message.ack()
+                        continue
+                    lead_id = int(row["id"])
+                    if changes > 0:
+                        await increment_dlc_for_lead(
                             self.env.DB,
-                            "UPDATE scan_sessions SET claimed_at = ? WHERE id = ?",
-                            now_ts,
-                            matched_session_id,
+                            self.env,
+                            ref_id=matched_qr_id,
+                            created_at=now_ts,
+                            d1_first=_d1_first,
+                            d1_run=_d1_run,
+                        )
+                    coupon_sent = row.get("coupon_code_sent")
+                    if not coupon_sent:
+                        code = (
+                            await _allocate_unique_coupon_code(
+                                self.env.DB, coupon_prefix, rand_len
+                            )
+                            if lead_id
+                            else ""
+                        )
+                        if code:
+                            tpl = (
+                                _str_env(self.env, "COUPON_WHATSAPP_TEMPLATE", "").strip()
+                                or _str_env(
+                                    self.env,
+                                    "PROMO_WHATSAPP_TEMPLATE",
+                                    "",
+                                ).strip()
+                                or _DEFAULT_COUPON_WA_TEMPLATE
+                            )
+                            spaced = format_coupon_spaced(code)
+                            await self._send_whatsapp_session_text(
+                                from_phone,
+                                tpl.format(code=code, code_spaced=spaced),
+                            )
+                            await _d1_run(
+                                self.env.DB,
+                                """
+                                UPDATE leads SET coupon_code_sent = ?
+                                WHERE id = ? AND (coupon_code_sent IS NULL OR coupon_code_sent = '')
+                                """,
+                                code,
+                                lead_id,
+                            )
+                    if method == "lcs" and matched_session_id is not None:
+                        await ss_claim_session(
+                            self.env.SCAN_KV, matched_session_id, now_ts
                         )
                 else:
-                    await self._send_whatsapp_session_text(from_phone, fallback_text)
+                    if not await inbound_fallback_claim(
+                        self.env.SCAN_KV, wa_message_id
+                    ):
+                        message.ack()
+                        continue
+                    try:
+                        await self._send_whatsapp_session_text(
+                            from_phone, fallback_text
+                        )
+                    except Exception:
+                        await inbound_fallback_release(
+                            self.env.SCAN_KV, wa_message_id
+                        )
+                        raise
+
             except Exception:
-                if claimed:
-                    await _d1_run(
-                        self.env.DB,
-                        "DELETE FROM processed_inbound_messages WHERE whatsapp_message_id = ?",
-                        wa_message_id,
-                    )
                 raise
 
             message.ack()

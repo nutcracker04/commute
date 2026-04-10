@@ -11,8 +11,6 @@ interface QrInventoryCardProps {
 }
 
 export function QrInventoryCard({ item }: QrInventoryCardProps) {
-  const scanned = item.last_scanned_at != null;
-
   return (
     <div className="border border-gray-200 rounded-lg p-3 sm:p-4 space-y-3 bg-white">
       <div className="space-y-1">
@@ -20,17 +18,10 @@ export function QrInventoryCard({ item }: QrInventoryCardProps) {
         <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-gray-500">
           <span>Provisioned: {formatTs(item.provisioned_at)}</span>
         </div>
-        <div className="text-[11px]">
-          <span
-            className={
-              scanned ? 'text-green-700 font-medium' : 'text-amber-700 font-medium'
-            }
-          >
-            {scanned ? `Last scanned ${formatTs(item.last_scanned_at)}` : 'Not scanned yet'}
-          </span>
-          {item.expires_at != null && (
-            <span className="text-gray-500 ml-2">Session expires: {formatTs(item.expires_at)}</span>
-          )}
+        <div className="text-[11px] text-gray-600">
+          <span className="font-mono text-gray-800">ref_id {item.ref_id ?? item.id}</span>
+          <span className="text-gray-500"> — link from </span>
+          <span className="text-amber-800 font-medium">Drivers → qr_ref_id</span>
         </div>
       </div>
 

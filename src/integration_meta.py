@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 
-def build_inventory_contract(public_base: str, example_ref_id: str = "deadbeef01234567") -> dict[str, str]:
+def build_inventory_contract(public_base: str, example_ref_id: str = "1") -> dict[str, str]:
     base = public_base.rstrip("/")
     return {
         "url_template": f"{base}/r/{{ref_id}}",
-        "optional_slug_template": f"{base}/r/{{slug}}",
-        "slug_note": "If physical_qrs.slug is set, the QR may encode /r/{slug} instead of ref_id.",
         "example_ref_id": example_ref_id,
         "example_full_url": f"{base}/r/{example_ref_id}",
-        "instructions": "Encode example_full_url (or slug URL) as the QR payload. Create rows with POST /api/physical-qrs; ref and text live in physical_qrs.",
+        "instructions": (
+            "ref_id is the integer row id in the qrs table (generated QR). "
+            "Encode example_full_url as the QR payload. Provision with POST /api/qrs. "
+            "Link a driver to that ref via drivers.qr_ref_id (POST/PATCH /api/drivers)."
+        ),
     }
 
 
@@ -21,8 +23,12 @@ def integration_document(*, public_base: str) -> dict[str, object]:
         "flow": "qr-whatsapp-leads",
         "registry": {
             "backend": "D1",
-            "inventory_table": "physical_qrs",
-            "ttl_note": "expires_at starts at first GET /r/...; SCAN_TTL_SECONDS (default 3h).",
+            "inventory_table": "qrs",
+            "ephemeral_match_state": "Workers KV (SCAN_KV) + commute-session-index queue; ss:data:* keys TTL from SCAN_TTL_SECONDS; wi:nm:* keys for fallback-reply dedupe (no lead row).",
+            "drivers_table": "drivers (qr_ref_id → qrs.id; R2 URLs: qr_asset_url, upi_qr_asset_url, identity_asset_urls JSON)",
+            "commission_tables": ["weeks", "driver_lead_counts"],
+            "leads": "ref_id = qrs.id; coupon_code_sent after match (prefix + random); live DLC increment + weekly cron reconcile",
+            "ttl_note": "Each GET /r/{ref_id} writes a KV session and enqueues index update; LCS match consumes that session in KV.",
         },
         "inventory_qr_payload": build_inventory_contract(public_base),
         "webhook": {
@@ -36,12 +42,39 @@ def integration_document(*, public_base: str) -> dict[str, object]:
             "fallback_whatsapp_replies": ["MSG91_AUTH_KEY", "MSG91_INTEGRATED_NUMBER"],
             "optional_inbound_auth": ["MSG91_WEBHOOK_SECRET"],
             "optional_vars": ["MSG91_SESSION_SEND_URL", "MSG91_WEBHOOK_SECRET_HEADER"],
-            "admin_inventory_api": "ADMIN_API_SECRET (required for /api/physical-qrs; 503 if unset). Local dev: .dev.vars",
+            "coupon_vars": "COUPON_CODE_PREFIX, COUPON_RANDOM_LENGTH, COUPON_WHATSAPP_TEMPLATE ({code}, {code_spaced}); legacy PROMO_CODE_PREFIX / PROMO_WHATSAPP_TEMPLATE / BRAND_COUPON_PREFIX",
+            "admin_inventory_api": "ADMIN_API_SECRET (required for admin JSON APIs; 503 if unset). Local dev: .dev.vars",
+            "r2_driver_assets": "DRIVER_ASSETS R2 binding; set R2_PUBLIC_BASE when using a public bucket hostname.",
             "public_base": "PUBLIC_BASE_URL in wrangler [vars] for correct /integration links",
         },
         "admin_api": {
-            "create": {"method": "POST", "path": "/api/physical-qrs"},
-            "list": {"method": "GET", "path": "/api/physical-qrs"},
+            "qrs_create": {"method": "POST", "path": "/api/qrs"},
+            "qrs_list": {"method": "GET", "path": "/api/qrs"},
+            "drivers_create": {
+                "method": "POST",
+                "path": "/api/drivers",
+                "body_fields": [
+                    "name",
+                    "phone",
+                    "driver_code?",
+                    "external_ref?",
+                    "qr_ref_id?",
+                ],
+            },
+            "drivers_list": {"method": "GET", "path": "/api/drivers"},
+            "drivers_patch": {"method": "PATCH", "path": "/api/drivers/{id}"},
+            "driver_qr_image": {"method": "PUT", "path": "/api/drivers/{id}/qr-image"},
+            "driver_upi_qr_image": {"method": "PUT", "path": "/api/drivers/{id}/upi-qr-image"},
+            "driver_identity_image": {"method": "PUT", "path": "/api/drivers/{id}/identity-image"},
+            "leads_list": {
+                "method": "GET",
+                "path": "/api/leads",
+                "query": "ref_id (legacy: qr_id)",
+                "response_fields": ["coupon_code_sent"],
+            },
+            "weeks_list": {"method": "GET", "path": "/api/weeks"},
+            "dlc_list": {"method": "GET", "path": "/api/dlc"},
+            "run_dlc_cron": {"method": "POST", "path": "/api/admin/run-dlc"},
             "auth_header": "ADMIN_API_SECRET_HEADER (default X-Admin-Key) or Authorization: Bearer …",
         },
         "setup_doc": "docs/flow-alignment.md",

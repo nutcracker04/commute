@@ -19,13 +19,36 @@ max_batch_size = 10
 max_batch_timeout = 5
 max_retries = 5
 
+[[queues.producers]]
+binding = "SESSION_INDEX_QUEUE"
+queue = "commute-session-index"
+
+[[queues.consumers]]
+queue = "commute-session-index"
+max_batch_size = 32
+max_batch_timeout = 2
+max_retries = 5
+
+[[kv_namespaces]]
+binding = "SCAN_KV"
+id = "cb105a7763e84da5b202b47cf1fbcd7f"
+
+# Create bucket when R2 is enabled on the account: npx wrangler r2 bucket create commute-leads-assets
+[[r2_buckets]]
+binding = "DRIVER_ASSETS"
+bucket_name = "commute-leads-assets"
+
+[triggers]
+# Sunday 06:00 UTC — 11:30 IST; weekly DLC aggregation (use SUN — numeric 0 is invalid on Cloudflare)
+crons = ["0 6 * * SUN"]
+
 [vars]
 # WhatsApp prefilled text template — passed to build_prefilled_text()
 WA_GREETING = "Hey!"
 WA_CONTEXT_TEXT = "the offer"
 WA_REQUEST_TEXT = "I would like more information"
-# TTL for scan_sessions after a QR is scanned (default 3h)
-SCAN_TTL_SECONDS = "10800"
+# TTL for scan session in KV after GET /r/{id} (6h)
+SCAN_TTL_SECONDS = "21600"
 # LCS fuzzy match: default always attributes to closest active scan_session (no dropped leads).
 # Set LCS_REQUIRE_CONFIDENCE = "true" to restore min_score / min_gap gating.
 LCS_REQUIRE_CONFIDENCE = "false"
@@ -42,6 +65,16 @@ PUBLIC_BASE_URL = "https://commute-leads-worker.harshithsai24.workers.dev"
 ADMIN_API_SECRET_HEADER = "X-Admin-Key"
 ADMIN_PROVISION_MAX_COUNT = "500"
 ADMIN_LIST_MAX_LIMIT = "500"
+# Minutes east of UTC for DLC week boundaries (330 = IST).
+DLC_WEEK_TZ_OFFSET_MINUTES = "330"
+# Brand prefix + random body (no brands table). Legacy env keys still read: PROMO_CODE_PREFIX, BRAND_COUPON_PREFIX.
+COUPON_CODE_PREFIX = "SINZA"
+# Random suffix length (default 6). Charset omits ambiguous 0/O/1/I/L.
+COUPON_RANDOM_LENGTH = "6"
+# After a matched lead. Use {code} (compact) and/or {code_spaced} (groups of 3). Legacy: PROMO_WHATSAPP_TEMPLATE.
+COUPON_WHATSAPP_TEMPLATE = "Here's your coupon — use it at checkout:\n\n*{code}*"
+# Public base URL for R2 objects (custom domain or r2.dev), no trailing slash. Optional until uploads used.
+R2_PUBLIC_BASE = "https://pub-d64bbf1d4002461d905fdb95ed882f17.r2.dev"
 
 # Optional [vars]: MSG91_WEBHOOK_SECRET_HEADER = "X-Webhook-Secret"
 # Optional [vars]: MSG91_SESSION_SEND_URL = "https://api.msg91.com/api/v5/whatsapp/..."
@@ -54,5 +87,5 @@ ADMIN_LIST_MAX_LIMIT = "500"
 #   MSG91_AUTH_KEY
 #   MSG91_INTEGRATED_NUMBER
 #   MSG91_WEBHOOK_SECRET   (optional; match MSG91_WEBHOOK_SECRET_HEADER from dashboard)
-#   ADMIN_API_SECRET         (required for /api/physical-qrs)
+#   ADMIN_API_SECRET         (required for /api/qrs)
 #   Local dev: .dev.vars (gitignored)
