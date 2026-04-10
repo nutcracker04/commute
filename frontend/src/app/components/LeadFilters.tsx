@@ -77,14 +77,14 @@ export function LeadFilters({ filters, onFilterChange, onReset }: LeadFiltersPro
 
         <div>
           <label htmlFor="refId" className="block text-xs font-medium text-gray-700 mb-1">
-            QR Ref ID
+            QR ref
           </label>
           <div className="relative">
             <Search className="absolute left-2.5 top-1/2 transform -translate-y-1/2 text-gray-400 w-3.5 h-3.5" />
             <input
               type="text"
               id="refId"
-              placeholder="Search ref ID..."
+              placeholder="QR number…"
               value={filters.refId}
               onChange={(e) => onFilterChange('refId', e.target.value)}
               className="w-full pl-8 pr-2.5 py-1.5 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"

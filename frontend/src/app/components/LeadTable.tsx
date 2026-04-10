@@ -49,7 +49,7 @@ export function LeadTable({ leads, currentPage, itemsPerPage }: LeadTableProps) 
             </div>
 
             <div className="mt-1 grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-2">
-              <div className="text-xs text-gray-500 leading-4">QR</div>
+              <div className="text-xs text-gray-500 leading-4">QR ref</div>
               <div className="text-xs font-mono text-gray-900 leading-4 truncate">
                 {lead.qrRefId}
               </div>
@@ -76,7 +76,7 @@ export function LeadTable({ leads, currentPage, itemsPerPage }: LeadTableProps) 
                 Contact
               </th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                QR Ref ID
+                QR ref
               </th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                 Coupon

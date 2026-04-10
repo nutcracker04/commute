@@ -24,8 +24,9 @@ export function QRGenerator({ refId, encodePayload, whatsappMessage, onGenerated
         width: 200,
         margin: 2,
         color: {
-          dark: '#000000',
-          light: '#FFFFFF',
+          dark: '#000000ff',
+          // Transparent “quiet zone” / background so PNG has no solid backdrop
+          light: '#00000000',
         },
       });
 
@@ -54,10 +55,15 @@ export function QRGenerator({ refId, encodePayload, whatsappMessage, onGenerated
 
   return (
     <div className="flex flex-col items-center gap-3">
-      <canvas
-        ref={canvasRef}
-        className="border border-gray-300 rounded-lg w-40 h-40 sm:w-[200px] sm:h-[200px] max-w-full"
-      />
+      <div
+        className="rounded-lg border border-dashed border-gray-300 bg-gray-100 p-1"
+        title="Gray area is only for preview; downloaded PNG uses a transparent background"
+      >
+        <canvas
+          ref={canvasRef}
+          className="block w-40 h-40 sm:w-[200px] sm:h-[200px] max-w-full rounded-md"
+        />
+      </div>
       {qrDataUrl && (
         <button
           onClick={handleDownload}

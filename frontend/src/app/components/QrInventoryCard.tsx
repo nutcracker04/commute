@@ -19,9 +19,9 @@ export function QrInventoryCard({ item }: QrInventoryCardProps) {
           <span>Provisioned: {formatTs(item.provisioned_at)}</span>
         </div>
         <div className="text-[11px] text-gray-600">
-          <span className="font-mono text-gray-800">ref_id {item.ref_id ?? item.id}</span>
-          <span className="text-gray-500"> — link from </span>
-          <span className="text-amber-800 font-medium">Drivers → qr_ref_id</span>
+          <span className="font-mono text-gray-800">QR number {item.ref_id ?? item.id}</span>
+          <span className="text-gray-500"> — assign under </span>
+          <span className="text-amber-800 font-medium">Drivers → Linked QR</span>
         </div>
       </div>
 

@@ -283,13 +283,22 @@ export function AdminPage() {
           </TabsContent>
 
           <TabsContent value="library" className="mt-4 space-y-4 outline-none">
-            <div className="flex flex-col gap-3 rounded-xl border border-gray-200 bg-white p-4 shadow-sm sm:flex-row sm:items-end sm:justify-between">
-              <div className="text-sm text-gray-600">All QR codes — permanent, reusable.</div>
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-xs text-gray-600 sm:text-sm">
+                {libraryTotal > 0 ? (
+                  <>
+                    Showing{' '}
+                    <span className="font-medium">{libraryTotal === 0 ? 0 : libraryOffset + 1}</span>–
+                    <span className="font-medium">{libraryEnd}</span> of{' '}
+                    <span className="font-medium">{libraryTotal}</span>
+                  </>
+                ) : null}
+              </p>
               <button
                 type="button"
                 onClick={() => void loadLibrary()}
                 disabled={!configured || libraryLoading}
-                className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-gray-300 px-3 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                className="inline-flex h-9 shrink-0 items-center gap-2 rounded-md border border-gray-300 bg-white px-3 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 disabled:opacity-50"
               >
                 <RefreshCw className={`h-4 w-4 ${libraryLoading ? 'animate-spin' : ''}`} />
                 Refresh
@@ -312,12 +321,6 @@ export function AdminPage() {
               </div>
             ) : (
               <>
-                <div className="text-xs text-gray-600 sm:text-sm">
-                  Showing{' '}
-                  <span className="font-medium">{libraryTotal === 0 ? 0 : libraryOffset + 1}</span>–
-                  <span className="font-medium">{libraryEnd}</span> of{' '}
-                  <span className="font-medium">{libraryTotal}</span>
-                </div>
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                   {libraryItems.map((item) => (
                     <QrInventoryCard key={item.id} item={item} />
@@ -354,14 +357,6 @@ export function AdminPage() {
           <TabsContent value="drivers" className="mt-4 space-y-4 outline-none">
             <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm sm:p-6 space-y-4">
               <h2 className="text-base font-semibold text-gray-900">Drivers</h2>
-              <p className="text-sm text-gray-600">
-                Set <code className="text-xs bg-gray-100 px-1 rounded">qr_ref_id</code> to the provisioned QR id
-                (<code className="text-xs">qrs.id</code>).
-                Upload assets (R2):{' '}
-                <code className="text-xs bg-gray-100 px-1 rounded">qr-image</code>,{' '}
-                <code className="text-xs bg-gray-100 px-1 rounded">upi-qr-image</code>,{' '}
-                <code className="text-xs bg-gray-100 px-1 rounded">identity-image</code>.
-              </p>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
                 <input
                   placeholder="Name *"
@@ -392,7 +387,7 @@ export function AdminPage() {
                   className="rounded-md border border-gray-300 px-2.5 py-1.5 text-sm"
                 />
                 <input
-                  placeholder="QR ref_id (qrs.id)"
+                  placeholder="Linked QR number"
                   value={dQrRef}
                   onChange={(e) => setDQrRef(e.target.value)}
                   disabled={!configured}
@@ -427,13 +422,13 @@ export function AdminPage() {
                 <table className="w-full text-sm">
                   <thead className="bg-gray-50 text-left text-xs text-gray-500 uppercase">
                     <tr>
-                      <th className="px-3 py-2">ID</th>
+                      <th className="px-3 py-2">Driver #</th>
                       <th className="px-3 py-2">Name</th>
                       <th className="px-3 py-2">Phone</th>
-                      <th className="px-3 py-2">Driver id</th>
-                      <th className="px-3 py-2">ref_id</th>
-                      <th className="px-3 py-2">WA QR</th>
-                      <th className="px-3 py-2">UPI</th>
+                      <th className="px-3 py-2">Driver code</th>
+                      <th className="px-3 py-2">Linked QR</th>
+                      <th className="px-3 py-2">WhatsApp QR</th>
+                      <th className="px-3 py-2">UPI QR</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
@@ -486,13 +481,9 @@ export function AdminPage() {
           <TabsContent value="commission" className="mt-4 space-y-4 outline-none">
             <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm sm:p-6 space-y-4">
               <h2 className="text-base font-semibold text-gray-900">Commission (DLC)</h2>
-              <p className="text-sm text-gray-600">
-                Counts increment on each new lead; Sunday 06:00 UTC cron reconciles from leads for the prior
-                week. Manual run uses the same reconciliation.
-              </p>
               <div className="flex flex-wrap items-end gap-3">
                 <div>
-                  <label className="block text-xs text-gray-600 mb-1">Filter by week id</label>
+                  <label className="block text-xs text-gray-600 mb-1">Week</label>
                   <select
                     value={dlcWeekId}
                     onChange={(e) => setDlcWeekId(e.target.value)}
@@ -539,9 +530,9 @@ export function AdminPage() {
                 <table className="w-full text-sm">
                   <thead className="bg-gray-50 text-left text-xs text-gray-500 uppercase sticky top-0">
                     <tr>
-                      <th className="px-3 py-2">ID</th>
-                      <th className="px-3 py-2">Start (unix)</th>
-                      <th className="px-3 py-2">End (unix)</th>
+                      <th className="px-3 py-2">Week #</th>
+                      <th className="px-3 py-2">Starts</th>
+                      <th className="px-3 py-2">Ends</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
@@ -560,11 +551,11 @@ export function AdminPage() {
                 <table className="w-full text-sm">
                   <thead className="bg-gray-50 text-left text-xs text-gray-500 uppercase sticky top-0">
                     <tr>
-                      <th className="px-3 py-2">DLC id</th>
-                      <th className="px-3 py-2">ref_id</th>
-                      <th className="px-3 py-2">Week</th>
+                      <th className="px-3 py-2">Entry</th>
+                      <th className="px-3 py-2">QR ref</th>
+                      <th className="px-3 py-2">Week #</th>
                       <th className="px-3 py-2">Leads</th>
-                      <th className="px-3 py-2">Computed</th>
+                      <th className="px-3 py-2">Updated</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">

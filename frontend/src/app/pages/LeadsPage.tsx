@@ -94,7 +94,7 @@ export function LeadsPage() {
       'Timestamp': format(lead.timestamp, 'MMM dd, yyyy hh:mm a'),
       'Name': lead.name,
       'Contact': lead.contact,
-      'QR Ref ID': lead.qrRefId,
+      'QR ref': lead.qrRefId,
       'Coupon': lead.couponCode,
     }));
 
