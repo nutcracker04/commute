@@ -5,6 +5,7 @@ Cloudflare Python Worker: QR redirect, WhatsApp inbound webhook → queue, consu
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from typing import Any
@@ -108,6 +109,113 @@ def _header_get(headers: Any, name: str) -> str | None:
         return str(headers[name])
     except Exception:
         return None
+
+
+def _extract_multipart_boundary(content_type: str) -> str | None:
+    if not content_type:
+        return None
+    lower = content_type.lower()
+    key = "boundary="
+    idx = lower.find(key)
+    if idx < 0:
+        return None
+    val = content_type[idx + len(key) :].strip()
+    if val.startswith('"'):
+        end = val.find('"', 1)
+        if end < 0:
+            return None
+        return val[1:end]
+    m = re.match(r"([^;\s]+)", val)
+    return m.group(1).strip() if m else None
+
+
+def _strip_mime_part_trailer(blob: bytes) -> bytes:
+    if blob.endswith(b"\r\n"):
+        return blob[:-2]
+    if blob.endswith(b"\n"):
+        return blob[:-1]
+    return blob
+
+
+def _parse_multipart_form_data(body: bytes, boundary: str) -> dict[str, tuple[Any, ...]]:
+    """Parse multipart/form-data without request.formData() (Python Workers often break on multipart).
+
+    Each value is ``("text", str)`` or ``("file", bytes, content_type)``.
+    """
+    if not boundary:
+        raise ValueError("missing boundary")
+    delim = b"--" + boundary.encode("latin-1", errors="strict")
+    segments = body.split(delim)
+    out: dict[str, tuple[Any, ...]] = {}
+    for seg in segments:
+        # Only trim leading CRLF before the first boundary line; do not strip the
+        # tail of the part (binary bodies may end with CR/LF bytes).
+        seg = seg.lstrip(b"\r\n")
+        if not seg or seg == b"--":
+            continue
+        header_end = seg.find(b"\r\n\r\n")
+        sep_len = 4
+        if header_end < 0:
+            header_end = seg.find(b"\n\n")
+            sep_len = 2
+        if header_end < 0:
+            continue
+        header_blob = seg[:header_end].decode("utf-8", errors="replace")
+        body_blob = seg[header_end + sep_len :]
+        cd_line = ""
+        ct_line = "text/plain"
+        for line in re.split(r"\r\n|\n", header_blob):
+            if not line.strip():
+                continue
+            low = line.lower()
+            if low.startswith("content-disposition:"):
+                cd_line = line
+            elif low.startswith("content-type:"):
+                ct_line = line.split(":", 1)[1].strip()
+        if not cd_line:
+            continue
+        name_m = re.search(r'name\s*=\s*"([^"]*)"', cd_line, re.I)
+        if not name_m:
+            name_m = re.search(r"name\s*=\s*'([^']*)'", cd_line, re.I)
+        if not name_m:
+            name_m = re.search(r"name\s*=\s*([^;\s]+)", cd_line, re.I)
+        if not name_m:
+            continue
+        field_name = name_m.group(1).strip().strip('"').strip("'")
+        has_file = "filename=" in cd_line.lower()
+        if has_file:
+            body_blob = _strip_mime_part_trailer(body_blob)
+            out[field_name] = (
+                "file",
+                body_blob,
+                ct_line or "application/octet-stream",
+            )
+        else:
+            body_blob = _strip_mime_part_trailer(body_blob)
+            out[field_name] = ("text", body_blob.decode("utf-8", errors="replace"))
+    return out
+
+
+def _multipart_text_field(parts: dict[str, tuple[Any, ...]], key: str) -> str:
+    v = parts.get(key)
+    if v and v[0] == "text":
+        return str(v[1]).strip()
+    return ""
+
+
+def _multipart_file_field(
+    parts: dict[str, tuple[Any, ...]], key: str
+) -> tuple[bytes | None, str]:
+    v = parts.get(key)
+    if v and v[0] == "file" and len(v) >= 3:
+        raw = v[1]
+        if not isinstance(raw, (bytes, bytearray)):
+            return None, ""
+        b = bytes(raw)
+        if not b:
+            return None, ""
+        return b, str(v[2] or "application/octet-stream").strip()
+    return None, ""
 
 
 def _admin_request_token(request: Any, env: Any) -> str | None:
@@ -329,6 +437,10 @@ class Default(WorkerEntrypoint):
                 ),
                 headers={"content-type": "application/json"},
             )
+        if path == "/api/qrs/available-refs":
+            if method == "GET":
+                return await self._handle_api_qrs_available_refs(request, url)
+            return Response("Method not allowed", status=405)
         if path == "/api/qrs":
             if method == "GET":
                 return await self._handle_api_qrs_list(request, url)
@@ -559,6 +671,61 @@ class Default(WorkerEntrypoint):
             status=200,
         )
 
+    async def _handle_api_qrs_available_refs(self, request, url: str) -> Response:
+        bad = _admin_api_check(request, self.env)
+        if bad is not None:
+            return bad
+
+        parsed = urlparse(url)
+        q = parse_qs(parsed.query or "")
+
+        def _first(key: str) -> str | None:
+            vals = q.get(key, [])
+            return str(vals[0]).strip() if vals and str(vals[0]).strip() else None
+
+        max_limit = _int_env(self.env, "ADMIN_AVAILABLE_REFS_MAX_LIMIT", 5000)
+        try:
+            limit = int(_first("limit") or str(max_limit))
+        except ValueError:
+            return _json_response({"error": "invalid limit"}, status=400)
+        try:
+            offset = int(_first("offset") or "0")
+        except ValueError:
+            return _json_response({"error": "invalid offset"}, status=400)
+
+        if limit < 1 or limit > max_limit:
+            return _json_response(
+                {"error": f"limit must be between 1 and {max_limit}"},
+                status=400,
+            )
+        if offset < 0:
+            return _json_response({"error": "offset must be >= 0"}, status=400)
+
+        fetch_n = limit + 1
+        rows = await _d1_all(
+            self.env.DB,
+            """
+            SELECT q.id
+            FROM qrs q
+            LEFT JOIN drivers d ON d.qr_ref_id = q.id
+            WHERE d.id IS NULL
+            ORDER BY q.id ASC
+            LIMIT ? OFFSET ?
+            """,
+            fetch_n,
+            offset,
+        )
+        has_more = len(rows) > limit
+        ref_ids = [int(r["id"]) for r in rows[:limit]]
+        return _json_response(
+            {
+                "ref_ids": ref_ids,
+                "has_more": has_more,
+                "limit": limit,
+                "offset": offset,
+            }
+        )
+
     async def _handle_api_leads_list(self, request, url: str) -> Response:
         bad = _admin_api_check(request, self.env)
         if bad is not None:
@@ -668,10 +835,44 @@ class Default(WorkerEntrypoint):
         return key
 
     async def _request_body_bytes(self, request: Any) -> bytes:
+        """Read raw POST body. Prefer workers.Request.bytes(); avoid arrayBuffer() (not on Python Request)."""
+        b_get = getattr(request, "bytes", None)
+        if callable(b_get):
+            raw = await b_get()
+            if isinstance(raw, (bytes, bytearray)):
+                return bytes(raw)
+        buf_get = getattr(request, "buffer", None)
+        if callable(buf_get):
+            ab = await buf_get()
+            if hasattr(ab, "to_bytes"):
+                return ab.to_bytes()
+            return bytes(ab)
         ab = await request.arrayBuffer()
         if hasattr(ab, "to_bytes"):
             return ab.to_bytes()
         return bytes(ab)
+
+    async def _r2_put_bytes(
+        self, bucket: Any, key: str, body: bytes, content_type: str
+    ) -> None:
+        """R2 ``put`` expects Blob/ArrayBufferView in Workers; plain Python bytes often fail."""
+        try:
+            from workers import Blob
+        except ImportError:
+            ct = (content_type or "").strip() or "application/octet-stream"
+            await bucket.put(
+                key,
+                bytes(body),
+                {"httpMetadata": {"contentType": ct}},
+            )
+            return
+        ct = (content_type or "").strip() or "application/octet-stream"
+        blob = Blob([bytes(body)], content_type=ct)
+        await bucket.put(
+            key,
+            blob.js_object,
+            {"httpMetadata": {"contentType": ct}},
+        )
 
     @staticmethod
     def _parse_identity_urls_json(raw: Any) -> list[str]:
@@ -686,6 +887,53 @@ class Default(WorkerEntrypoint):
         except json.JSONDecodeError:
             pass
         return []
+
+    @staticmethod
+    def _driver_assets_satisfied(upi_url: Any, identity_raw: Any) -> bool:
+        if not upi_url or not str(upi_url).strip():
+            return False
+        urls = Default._parse_identity_urls_json(identity_raw)
+        return len(urls) > 0
+
+    @staticmethod
+    def _image_ext_from_content_type(ct: str) -> str:
+        c = (ct or "").lower()
+        if "png" in c:
+            return "png"
+        if "jpeg" in c or "jpg" in c:
+            return "jpg"
+        if "webp" in c:
+            return "webp"
+        if "pdf" in c:
+            return "pdf"
+        return "bin"
+
+    async def _form_upload_bytes(self, part: Any) -> tuple[bytes | None, str]:
+        if part is None:
+            return None, ""
+        if isinstance(part, str):
+            return None, ""
+        try:
+            ab = await part.arrayBuffer()
+        except Exception:
+            return None, ""
+        if hasattr(ab, "to_bytes"):
+            raw = ab.to_bytes()
+        else:
+            raw = bytes(ab)
+        if not raw:
+            return None, ""
+        ct = ""
+        try:
+            ct = str(getattr(part, "type", None) or "").strip()
+        except Exception:
+            pass
+        return raw, ct or "application/octet-stream"
+
+    @staticmethod
+    def _canonical_driver_code(driver_id: int, stored: Any) -> str:
+        s = str(stored).strip() if stored is not None else ""
+        return s if s else f"D{int(driver_id)}"
 
     async def _handle_api_drivers_list(self, request, url: str) -> Response:
         bad = _admin_api_check(request, self.env)
@@ -723,7 +971,7 @@ class Default(WorkerEntrypoint):
         rows = await _d1_all(
             self.env.DB,
             """
-            SELECT id, external_ref, driver_code, name, phone, qr_ref_id,
+            SELECT id, driver_code, name, phone, qr_ref_id,
                    qr_asset_url, upi_qr_asset_url, identity_asset_urls, created_at
             FROM drivers
             ORDER BY id DESC
@@ -735,12 +983,13 @@ class Default(WorkerEntrypoint):
 
         items = []
         for r in rows:
+            did = int(r["id"])
+            code = self._canonical_driver_code(did, r.get("driver_code"))
             items.append(
                 {
-                    "id": int(r["id"]),
-                    "external_ref": r.get("external_ref"),
-                    "driver_code": r.get("driver_code"),
-                    "driver_id": r.get("driver_code"),
+                    "id": did,
+                    "driver_code": code,
+                    "driver_id": code,
                     "name": r["name"],
                     "phone": r["phone"],
                     "qr_ref_id": int(r["qr_ref_id"])
@@ -766,66 +1015,121 @@ class Default(WorkerEntrypoint):
         if bad is not None:
             return bad
 
-        body_text = await request.text()
-        try:
-            payload = json.loads(body_text) if body_text.strip() else {}
-        except json.JSONDecodeError:
-            return _json_response({"error": "invalid JSON"}, status=400)
-        if not isinstance(payload, dict):
-            return _json_response({"error": "body must be a JSON object"}, status=400)
+        ct_hdr = (_header_get(request.headers, "Content-Type") or "").lower()
+        if "multipart/form-data" not in ct_hdr:
+            return _json_response(
+                {
+                    "error": (
+                        "use multipart/form-data with fields: name, phone, qr_ref_id, "
+                        "and file fields upi_qr, identity"
+                    )
+                },
+                status=415,
+            )
 
-        name = str(payload.get("name") or "").strip()
-        phone = str(payload.get("phone") or "").strip()
+        full_ct = _header_get(request.headers, "Content-Type") or ""
+        boundary = _extract_multipart_boundary(full_ct)
+        if not boundary:
+            return _json_response({"error": "multipart boundary missing"}, status=400)
+
+        try:
+            raw_body = await self._request_body_bytes(request)
+            parts = _parse_multipart_form_data(raw_body, boundary)
+        except Exception:
+            return _json_response({"error": "invalid multipart body"}, status=400)
+
+        name = _multipart_text_field(parts, "name")
+        phone = _multipart_text_field(parts, "phone")
         if not name or not phone:
             return _json_response({"error": "name and phone are required"}, status=400)
 
-        external_ref = str(payload.get("external_ref") or "").strip() or None
-        driver_code = str(payload.get("driver_code") or "").strip() or None
-        qr_ref_id: int | None = None
-        if payload.get("qr_ref_id") is not None:
-            try:
-                qr_ref_id = int(payload.get("qr_ref_id"))
-            except (TypeError, ValueError):
-                return _json_response({"error": "invalid qr_ref_id"}, status=400)
-            qrow = await _d1_first(
-                self.env.DB, "SELECT id FROM qrs WHERE id = ?", qr_ref_id
+        qr_ref_raw = _multipart_text_field(parts, "qr_ref_id")
+        if not qr_ref_raw:
+            return _json_response({"error": "qr_ref_id is required"}, status=400)
+        try:
+            qr_ref_id = int(qr_ref_raw)
+        except ValueError:
+            return _json_response({"error": "invalid qr_ref_id"}, status=400)
+        qrow = await _d1_first(
+            self.env.DB, "SELECT id FROM qrs WHERE id = ?", qr_ref_id
+        )
+        if not qrow:
+            return _json_response({"error": "qr_ref_id not found in qrs"}, status=400)
+        taken = await _d1_first(
+            self.env.DB, "SELECT id FROM drivers WHERE qr_ref_id = ?", qr_ref_id
+        )
+        if taken:
+            return _json_response(
+                {"error": "qr_ref_id already assigned to another driver"},
+                status=409,
             )
-            if not qrow:
-                return _json_response({"error": "qr_ref_id not found in qrs"}, status=400)
-            taken = await _d1_first(
-                self.env.DB, "SELECT id FROM drivers WHERE qr_ref_id = ?", qr_ref_id
+
+        bucket = getattr(self.env, "DRIVER_ASSETS", None)
+        if bucket is None:
+            return _json_response({"error": "R2 not configured"}, status=503)
+
+        upi_body, upi_ct = _multipart_file_field(parts, "upi_qr")
+        id_body, id_ct = _multipart_file_field(parts, "identity")
+        if not upi_body:
+            return _json_response({"error": "upi_qr file is required"}, status=400)
+        if not id_body:
+            return _json_response(
+                {"error": "identity proof file is required"}, status=400
             )
-            if taken:
-                return _json_response(
-                    {"error": "qr_ref_id already linked to another driver"}, status=409
-                )
 
         now = int(time.time())
-
         did = await _d1_last_insert_rowid(
             self.env.DB,
             """
-            INSERT INTO drivers (external_ref, driver_code, name, phone, qr_ref_id, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO drivers (name, phone, created_at)
+            VALUES (?, ?, ?)
             """,
-            external_ref,
-            driver_code,
             name,
             phone,
-            qr_ref_id,
             now,
         )
         if did is None:
             return _json_response({"error": "failed to create driver"}, status=500)
 
+        try:
+            upi_ext = self._image_ext_from_content_type(upi_ct)
+            id_ext = self._image_ext_from_content_type(id_ct)
+            upi_key = f"drivers/{did}/upi-qr.{upi_ext}"
+            id_uid = uuid.uuid4().hex[:12]
+            id_key = f"drivers/{did}/id-{id_uid}.{id_ext}"
+            await self._r2_put_bytes(bucket, upi_key, upi_body, upi_ct)
+            await self._r2_put_bytes(bucket, id_key, id_body, id_ct)
+            upi_url = self._r2_object_public_url(upi_key)
+            id_url = self._r2_object_public_url(id_key)
+            ident_json = json.dumps([id_url])
+            auto_code = f"D{did}"
+            await _d1_run(
+                self.env.DB,
+                """
+                UPDATE drivers
+                SET upi_qr_asset_url = ?, identity_asset_urls = ?,
+                    driver_code = ?, qr_ref_id = ?
+                WHERE id = ?
+                """,
+                upi_url,
+                ident_json,
+                auto_code,
+                qr_ref_id,
+                did,
+            )
+        except Exception:
+            await _d1_run(self.env.DB, "DELETE FROM drivers WHERE id = ?", did)
+            return _json_response({"error": "failed to store driver assets"}, status=500)
+
         return _json_response(
             {
                 "id": did,
-                "external_ref": external_ref,
-                "driver_code": driver_code,
-                "qr_ref_id": qr_ref_id,
+                "driver_code": auto_code,
                 "name": name,
                 "phone": phone,
+                "qr_ref_id": qr_ref_id,
+                "upi_qr_asset_url": upi_url,
+                "identity_asset_urls": [id_url],
                 "created_at": now,
             },
             status=201,
@@ -840,11 +1144,39 @@ class Default(WorkerEntrypoint):
         if not isinstance(payload, dict):
             return _json_response({"error": "body must be a JSON object"}, status=400)
 
-        row = await _d1_first(
-            self.env.DB, "SELECT id FROM drivers WHERE id = ?", driver_id
+        cur = await _d1_first(
+            self.env.DB,
+            """
+            SELECT id, qr_ref_id, qr_asset_url, upi_qr_asset_url, identity_asset_urls
+            FROM drivers WHERE id = ?
+            """,
+            driver_id,
         )
-        if not row:
+        if not cur:
             return _json_response({"error": "not found"}, status=404)
+
+        merged_upi = cur.get("upi_qr_asset_url")
+        merged_ident = cur.get("identity_asset_urls")
+        if "upi_qr_asset_url" in payload:
+            v = payload.get("upi_qr_asset_url")
+            merged_upi = None if v is None else str(v).strip() or None
+        if "identity_asset_urls" in payload:
+            v = payload.get("identity_asset_urls")
+            if v is None:
+                merged_ident = None
+            elif isinstance(v, list):
+                merged_ident = json.dumps([str(x) for x in v if x])
+            else:
+                return _json_response({"error": "identity_asset_urls must be a list"}, status=400)
+        if not self._driver_assets_satisfied(merged_upi, merged_ident):
+            return _json_response(
+                {
+                    "error": (
+                        "driver must keep upi qr and at least one identity proof URL"
+                    )
+                },
+                status=400,
+            )
 
         sets: list[str] = []
         vals: list[Any] = []
@@ -854,28 +1186,6 @@ class Default(WorkerEntrypoint):
         if "phone" in payload:
             sets.append("phone = ?")
             vals.append(str(payload.get("phone") or "").strip())
-        if "external_ref" in payload:
-            sets.append("external_ref = ?")
-            v = payload.get("external_ref")
-            vals.append(None if v is None else str(v).strip() or None)
-        if "driver_code" in payload:
-            sets.append("driver_code = ?")
-            v = payload.get("driver_code")
-            vals.append(None if v is None else str(v).strip() or None)
-        if "qr_asset_url" in payload:
-            sets.append("qr_asset_url = ?")
-            v = payload.get("qr_asset_url")
-            vals.append(None if v is None else str(v).strip() or None)
-        if "identity_asset_urls" in payload:
-            v = payload.get("identity_asset_urls")
-            if v is None:
-                sets.append("identity_asset_urls = ?")
-                vals.append(None)
-            elif isinstance(v, list):
-                sets.append("identity_asset_urls = ?")
-                vals.append(json.dumps([str(x) for x in v if x]))
-            else:
-                return _json_response({"error": "identity_asset_urls must be a list"}, status=400)
         if "qr_ref_id" in payload:
             v = payload.get("qr_ref_id")
             if v is None:
@@ -890,7 +1200,7 @@ class Default(WorkerEntrypoint):
                     self.env.DB, "SELECT id FROM qrs WHERE id = ?", qrid
                 )
                 if not qrow:
-                    return _json_response({"error": "qr_ref_id not found"}, status=400)
+                    return _json_response({"error": "qr_ref_id not found in qrs"}, status=400)
                 taken = await _d1_first(
                     self.env.DB,
                     "SELECT id FROM drivers WHERE qr_ref_id = ? AND id != ?",
@@ -899,11 +1209,27 @@ class Default(WorkerEntrypoint):
                 )
                 if taken:
                     return _json_response(
-                        {"error": "qr_ref_id already linked to another driver"},
+                        {
+                            "error": "qr_ref_id already assigned to another driver",
+                        },
                         status=409,
                     )
                 sets.append("qr_ref_id = ?")
                 vals.append(qrid)
+        if "qr_asset_url" in payload:
+            sets.append("qr_asset_url = ?")
+            v = payload.get("qr_asset_url")
+            vals.append(None if v is None else str(v).strip() or None)
+        if "identity_asset_urls" in payload:
+            v = payload.get("identity_asset_urls")
+            if v is None:
+                sets.append("identity_asset_urls = ?")
+                vals.append(None)
+            elif isinstance(v, list):
+                sets.append("identity_asset_urls = ?")
+                vals.append(json.dumps([str(x) for x in v if x]))
+            else:
+                return _json_response({"error": "identity_asset_urls must be a list"}, status=400)
         if "upi_qr_asset_url" in payload:
             v = payload.get("upi_qr_asset_url")
             sets.append("upi_qr_asset_url = ?")
@@ -941,7 +1267,7 @@ class Default(WorkerEntrypoint):
         elif "webp" in ct.lower():
             ext = "webp"
         key = f"drivers/{driver_id}/qr.{ext}"
-        await bucket.put(key, body, {"httpMetadata": {"contentType": ct}})
+        await self._r2_put_bytes(bucket, key, body, ct)
         url = self._r2_object_public_url(key)
         await _d1_run(
             self.env.DB,
@@ -975,7 +1301,7 @@ class Default(WorkerEntrypoint):
         elif "webp" in ct.lower():
             ext = "webp"
         key = f"drivers/{driver_id}/upi-qr.{ext}"
-        await bucket.put(key, body, {"httpMetadata": {"contentType": ct}})
+        await self._r2_put_bytes(bucket, key, body, ct)
         url = self._r2_object_public_url(key)
         await _d1_run(
             self.env.DB,
@@ -1013,7 +1339,7 @@ class Default(WorkerEntrypoint):
 
         uid = uuid.uuid4().hex[:12]
         key = f"drivers/{driver_id}/id-{uid}.{ext}"
-        await bucket.put(key, body, {"httpMetadata": {"contentType": ct}})
+        await self._r2_put_bytes(bucket, key, body, ct)
         url = self._r2_object_public_url(key)
         urls = self._parse_identity_urls_json(row.get("identity_asset_urls"))
         urls.append(url)

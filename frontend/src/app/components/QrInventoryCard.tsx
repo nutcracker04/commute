@@ -20,8 +20,11 @@ export function QrInventoryCard({ item }: QrInventoryCardProps) {
         </div>
         <div className="text-[11px] text-gray-600">
           <span className="font-mono text-gray-800">QR number {item.ref_id ?? item.id}</span>
-          <span className="text-gray-500"> — assign under </span>
-          <span className="text-amber-800 font-medium">Drivers → Linked QR</span>
+          <span className="text-gray-500"> — same ref id as </span>
+          <span className="font-mono text-gray-800">leads.ref_id</span>
+          <span className="text-gray-500"> when scanned; enter this id as </span>
+          <span className="text-amber-800 font-medium">Ref ID</span>
+          <span className="text-gray-500"> when adding a driver</span>
         </div>
       </div>
 

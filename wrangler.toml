@@ -65,6 +65,8 @@ PUBLIC_BASE_URL = "https://commute-leads-worker.harshithsai24.workers.dev"
 ADMIN_API_SECRET_HEADER = "X-Admin-Key"
 ADMIN_PROVISION_MAX_COUNT = "500"
 ADMIN_LIST_MAX_LIMIT = "500"
+# Max page size for GET /api/qrs/available-refs (admin driver ref dropdown).
+ADMIN_AVAILABLE_REFS_MAX_LIMIT = "5000"
 # Minutes east of UTC for DLC week boundaries (330 = IST).
 DLC_WEEK_TZ_OFFSET_MINUTES = "330"
 # Brand prefix + random body (no brands table). Legacy env keys still read: PROMO_CODE_PREFIX, BRAND_COUPON_PREFIX.

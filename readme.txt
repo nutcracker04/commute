@@ -25,6 +25,13 @@ npx wrangler d1 execute commute-leads --remote --file=migrations/0010_drop_scan_
 npx wrangler d1 execute commute-leads --remote --file=migrations/0011_domain_alignment.sql
 npx wrangler d1 execute commute-leads --remote --file=migrations/0012_drop_processed_inbound.sql
 npx wrangler d1 execute commute-leads --remote --file=migrations/0013_rename_promo_to_coupon.sql
+npx wrangler d1 execute commute-leads --remote --file=migrations/0014_drop_driver_external_qr_ref.sql
+npx wrangler d1 execute commute-leads --remote --file=migrations/0015_backfill_driver_code.sql
+npx wrangler d1 execute commute-leads --remote --file=migrations/0016_drivers_qr_ref_id.sql
+
+# If 0014 failed with "cannot drop UNIQUE column: external_ref", use the current 0014 file (table rebuild) and re-run.
+# 0015 is safe to run again. If 0016 fails with duplicate column qr_ref_id, skip the ALTER and run only:
+#   CREATE UNIQUE INDEX IF NOT EXISTS idx_drivers_qr_ref_id ON drivers (qr_ref_id);
 
 # KV + Queues (if not already created for this account)
 # npx wrangler kv namespace create commute-scan-sessions
@@ -66,6 +73,9 @@ cd frontend && npm run build && npx wrangler pages deploy dist --project-name=co
 VITE_ADMIN_API_SECRET=<same value as ADMIN_API_SECRET>
 VITE_API_BASE_URL=https://commute-leads-worker.harshithsai24.workers.dev
 
+# Optional worker var (wrangler.toml [vars]): ADMIN_AVAILABLE_REFS_MAX_LIMIT — cap per request for
+# GET /api/qrs/available-refs (default 5000). The admin UI pages through until all unassigned ids load.
+
 
 ## MSG91 Webhook Setup
 
@@ -101,7 +111,7 @@ https://commute-leads-worker.harshithsai24.workers.dev/webhook/whatsapp
 
 - D1 tables: `qrs`, `leads`, `drivers`, `weeks`, `driver_lead_counts` (plus `d1_migrations` if using wrangler apply). Inbound dedupe: unique `leads.whatsapp_message_id` + KV `wi:nm:*` for unmatched fallback replies only.
 - `ref_id` on leads and `driver_lead_counts` is the integer `qrs.id` (same id as `GET /r/{id}`).
-- Drivers store `qr_ref_id` (FK to `qrs.id`), WhatsApp QR image URL in `qr_asset_url`, UPI QR in `upi_qr_asset_url`, plus identity URLs. Link QR ↔ driver only via driver fields (no `qrs.driver_id`).
+- Drivers: `name`, `phone`; `driver_code` auto `D{id}`; **`qr_ref_id`** = same ref as `qrs.id` / `leads.ref_id`, required on create; UPI QR + identity required on create; PATCH cannot clear UPI/identity. Optional legacy `qr_asset_url` via `PUT /api/drivers/{id}/qr-image` only. No `external_ref`. `GET /api/qrs/available-refs` lists `qrs.id` values not yet assigned to a driver. Leads use `ref_id` = `qrs.id` from scans.
 - Leads store `coupon_code_sent` after a match (prefix + random body; no brands table). Vars: `COUPON_CODE_PREFIX`, optional `COUPON_RANDOM_LENGTH`, `COUPON_WHATSAPP_TEMPLATE` (`{code}`, `{code_spaced}`). Legacy prefix keys: `PROMO_CODE_PREFIX`, `BRAND_COUPON_PREFIX`.
 - `driver_lead_counts` has surrogate `id`, unique `(ref_id, week_id)`; counts increment on each new lead and the Sunday cron reconciles from `leads` for the prior IST week.
 
@@ -120,6 +130,9 @@ npx wrangler d1 execute commute-leads --local --file=migrations/0010_drop_scan_s
 npx wrangler d1 execute commute-leads --local --file=migrations/0011_domain_alignment.sql
 npx wrangler d1 execute commute-leads --local --file=migrations/0012_drop_processed_inbound.sql
 npx wrangler d1 execute commute-leads --local --file=migrations/0013_rename_promo_to_coupon.sql
+npx wrangler d1 execute commute-leads --local --file=migrations/0014_drop_driver_external_qr_ref.sql
+npx wrangler d1 execute commute-leads --local --file=migrations/0015_backfill_driver_code.sql
+npx wrangler d1 execute commute-leads --local --file=migrations/0016_drivers_qr_ref_id.sql
 
 # Weekly DLC cron: Sunday 06:00 UTC (see wrangler.toml [triggers]); manual run:
 # curl -X POST -H "X-Admin-Key: <secret>" https://<worker>/api/admin/run-dlc

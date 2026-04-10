@@ -24,7 +24,6 @@ export type LeadItem = {
 
 export type DriverItem = {
   id: number;
-  external_ref: string | null;
   driver_code: string | null;
   driver_id: string | null;
   name: string;
@@ -143,17 +142,36 @@ export async function listDrivers(params: {
   };
 }
 
-export async function createDriver(body: {
-  name: string;
-  phone: string;
-  driver_code?: string;
-  external_ref?: string;
-  qr_ref_id?: number;
-}): Promise<{ id: number }> {
+export async function listAvailableRefIds(params: {
+  limit?: number;
+  offset?: number;
+}): Promise<{ ref_ids: number[]; has_more: boolean; limit: number; offset: number }> {
+  const sp = new URLSearchParams();
+  if (params.limit != null) sp.set('limit', String(params.limit));
+  if (params.offset != null) sp.set('offset', String(params.offset));
+  const qs = sp.toString();
+  const res = await fetch(apiUrl(`/api/qrs/available-refs${qs ? `?${qs}` : ''}`), {
+    method: 'GET',
+    headers: adminHeaders(false),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(typeof data.error === 'string' ? data.error : `Request failed (${res.status})`);
+  }
+  return {
+    ref_ids: Array.isArray(data.ref_ids) ? data.ref_ids.map((n: unknown) => Number(n)) : [],
+    has_more: Boolean(data.has_more),
+    limit: data.limit ?? 0,
+    offset: data.offset ?? 0,
+  };
+}
+
+/** Multipart: name, phone, qr_ref_id, files upi_qr, identity (driver_code server-side D{id}) */
+export async function createDriver(form: FormData): Promise<{ id: number }> {
   const res = await fetch(apiUrl('/api/drivers'), {
     method: 'POST',
-    headers: adminHeaders(true),
-    body: JSON.stringify(body),
+    headers: adminHeaders(false),
+    body: form,
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {

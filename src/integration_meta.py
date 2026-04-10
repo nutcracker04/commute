@@ -12,7 +12,7 @@ def build_inventory_contract(public_base: str, example_ref_id: str = "1") -> dic
         "instructions": (
             "ref_id is the integer row id in the qrs table (generated QR). "
             "Encode example_full_url as the QR payload. Provision with POST /api/qrs. "
-            "Link a driver to that ref via drivers.qr_ref_id (POST/PATCH /api/drivers)."
+            "Assign drivers.qr_ref_id = qrs.id (same ref id as leads); multipart POST /api/drivers with qr_ref_id, UPI + identity files."
         ),
     }
 
@@ -25,7 +25,7 @@ def integration_document(*, public_base: str) -> dict[str, object]:
             "backend": "D1",
             "inventory_table": "qrs",
             "ephemeral_match_state": "Workers KV (SCAN_KV) + commute-session-index queue; ss:data:* keys TTL from SCAN_TTL_SECONDS; wi:nm:* keys for fallback-reply dedupe (no lead row).",
-            "drivers_table": "drivers (qr_ref_id → qrs.id; R2 URLs: qr_asset_url, upi_qr_asset_url, identity_asset_urls JSON)",
+            "drivers_table": "drivers (qr_ref_id → qrs.id, same ref id as leads; upi_qr_asset_url, identity_asset_urls JSON; optional legacy qr_asset_url via PUT qr-image)",
             "commission_tables": ["weeks", "driver_lead_counts"],
             "leads": "ref_id = qrs.id; coupon_code_sent after match (prefix + random); live DLC increment + weekly cron reconcile",
             "ttl_note": "Each GET /r/{ref_id} writes a KV session and enqueues index update; LCS match consumes that session in KV.",
@@ -50,15 +50,22 @@ def integration_document(*, public_base: str) -> dict[str, object]:
         "admin_api": {
             "qrs_create": {"method": "POST", "path": "/api/qrs"},
             "qrs_list": {"method": "GET", "path": "/api/qrs"},
+            "qrs_available_refs": {
+                "method": "GET",
+                "path": "/api/qrs/available-refs",
+                "query": "limit, offset",
+                "response": "ref_ids, has_more",
+            },
             "drivers_create": {
                 "method": "POST",
                 "path": "/api/drivers",
-                "body_fields": [
+                "content_type": "multipart/form-data",
+                "fields": [
                     "name",
                     "phone",
-                    "driver_code?",
-                    "external_ref?",
-                    "qr_ref_id?",
+                    "qr_ref_id",
+                    "upi_qr (file)",
+                    "identity (file)",
                 ],
             },
             "drivers_list": {"method": "GET", "path": "/api/drivers"},

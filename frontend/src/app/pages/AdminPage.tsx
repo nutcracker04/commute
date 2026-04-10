@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Plus, RefreshCw, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { QrInventoryCard } from '../components/QrInventoryCard';
@@ -8,6 +8,7 @@ import {
   isAdminApiConfigured,
   createDriver,
   listDrivers,
+  listAvailableRefIds,
   listWeeks,
   listDlc,
   runDlcAggregation,
@@ -41,10 +42,12 @@ export function AdminPage() {
   const [driversError, setDriversError] = useState<string | null>(null);
   const [dName, setDName] = useState('');
   const [dPhone, setDPhone] = useState('');
-  const [dCode, setDCode] = useState('');
-  const [dExtRef, setDExtRef] = useState('');
-  const [dQrRef, setDQrRef] = useState('');
+  const [dQrRefId, setDQrRefId] = useState('');
+  const [availableRefIds, setAvailableRefIds] = useState<number[]>([]);
+  const [refIdsLoading, setRefIdsLoading] = useState(false);
   const [driverCreateBusy, setDriverCreateBusy] = useState(false);
+  const upiQrFileRef = useRef<HTMLInputElement>(null);
+  const identityFileRef = useRef<HTMLInputElement>(null);
 
   const [weeks, setWeeks] = useState<WeekItem[]>([]);
   const [dlcRows, setDlcRows] = useState<DlcItem[]>([]);
@@ -94,6 +97,27 @@ export function AdminPage() {
     }
   }, [configured]);
 
+  const loadAvailableRefIds = useCallback(async () => {
+    if (!configured) return;
+    setRefIdsLoading(true);
+    try {
+      const page = 2000;
+      const acc: number[] = [];
+      let offset = 0;
+      for (let guard = 0; guard < 100; guard += 1) {
+        const { ref_ids, has_more } = await listAvailableRefIds({ limit: page, offset });
+        acc.push(...ref_ids);
+        if (!has_more) break;
+        offset += ref_ids.length;
+      }
+      setAvailableRefIds(acc);
+    } catch {
+      setAvailableRefIds([]);
+    } finally {
+      setRefIdsLoading(false);
+    }
+  }, [configured]);
+
   const loadCommission = useCallback(async () => {
     if (!configured) return;
     setCommissionLoading(true);
@@ -121,8 +145,9 @@ export function AdminPage() {
   useEffect(() => {
     if (tab === 'drivers' && configured) {
       void loadDrivers();
+      void loadAvailableRefIds();
     }
-  }, [tab, configured, loadDrivers]);
+  }, [tab, configured, loadDrivers, loadAvailableRefIds]);
 
   useEffect(() => {
     if (tab === 'commission' && configured) {
@@ -162,27 +187,38 @@ export function AdminPage() {
     if (!configured) return;
     const name = dName.trim();
     const phone = dPhone.trim();
+    const refNum = parseInt(dQrRefId.trim(), 10);
     if (!name || !phone) {
       setDriversError('Name and phone are required');
+      return;
+    }
+    if (isNaN(refNum) || refNum < 1 || !availableRefIds.includes(refNum)) {
+      setDriversError('Select an available ref ID from the list');
+      return;
+    }
+    const upiFile = upiQrFileRef.current?.files?.[0];
+    const idFile = identityFileRef.current?.files?.[0];
+    if (!upiFile || !idFile) {
+      setDriversError('UPI QR and identity proof files are required');
       return;
     }
     setDriverCreateBusy(true);
     setDriversError(null);
     try {
-      const qrRefNum = dQrRef.trim() ? parseInt(dQrRef.trim(), 10) : NaN;
-      await createDriver({
-        name,
-        phone,
-        driver_code: dCode.trim() || undefined,
-        external_ref: dExtRef.trim() || undefined,
-        qr_ref_id: !isNaN(qrRefNum) ? qrRefNum : undefined,
-      });
+      const fd = new FormData();
+      fd.append('name', name);
+      fd.append('phone', phone);
+      fd.append('qr_ref_id', String(refNum));
+      fd.append('upi_qr', upiFile);
+      fd.append('identity', idFile);
+      await createDriver(fd);
       setDName('');
       setDPhone('');
-      setDCode('');
-      setDExtRef('');
-      setDQrRef('');
+      setDQrRefId('');
+      if (upiQrFileRef.current) upiQrFileRef.current.value = '';
+      if (identityFileRef.current) identityFileRef.current.value = '';
       await loadDrivers();
+      await loadAvailableRefIds();
     } catch (e) {
       setDriversError(e instanceof Error ? e.message : 'Create failed');
     } finally {
@@ -357,42 +393,68 @@ export function AdminPage() {
           <TabsContent value="drivers" className="mt-4 space-y-4 outline-none">
             <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm sm:p-6 space-y-4">
               <h2 className="text-base font-semibold text-gray-900">Drivers</h2>
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+              <div className="grid gap-3 sm:grid-cols-2 sm:max-w-xl">
                 <input
                   placeholder="Name *"
                   value={dName}
                   onChange={(e) => setDName(e.target.value)}
                   disabled={!configured}
-                  className="rounded-md border border-gray-300 px-2.5 py-1.5 text-sm"
+                  className="w-full min-w-0 rounded-md border border-gray-300 px-2.5 py-1.5 text-sm"
                 />
                 <input
                   placeholder="Phone *"
                   value={dPhone}
                   onChange={(e) => setDPhone(e.target.value)}
                   disabled={!configured}
-                  className="rounded-md border border-gray-300 px-2.5 py-1.5 text-sm"
+                  className="w-full min-w-0 rounded-md border border-gray-300 px-2.5 py-1.5 text-sm"
                 />
-                <input
-                  placeholder="Driver code"
-                  value={dCode}
-                  onChange={(e) => setDCode(e.target.value)}
-                  disabled={!configured}
-                  className="rounded-md border border-gray-300 px-2.5 py-1.5 text-sm"
-                />
-                <input
-                  placeholder="External ref"
-                  value={dExtRef}
-                  onChange={(e) => setDExtRef(e.target.value)}
-                  disabled={!configured}
-                  className="rounded-md border border-gray-300 px-2.5 py-1.5 text-sm"
-                />
-                <input
-                  placeholder="Linked QR number"
-                  value={dQrRef}
-                  onChange={(e) => setDQrRef(e.target.value)}
-                  disabled={!configured}
-                  className="rounded-md border border-gray-300 px-2.5 py-1.5 text-sm"
-                />
+                <div className="flex min-w-0 flex-col gap-1">
+                  <label className="text-xs font-medium text-gray-700" htmlFor="driver-ref-id-select">
+                    Ref ID *
+                  </label>
+                  <select
+                    id="driver-ref-id-select"
+                    value={dQrRefId}
+                    onChange={(e) => setDQrRefId(e.target.value)}
+                    disabled={!configured || refIdsLoading}
+                    className="w-full min-w-0 rounded-md border border-gray-300 px-2.5 py-1.5 text-sm"
+                  >
+                    <option value="">
+                      {refIdsLoading
+                        ? 'Loading…'
+                        : availableRefIds.length === 0
+                          ? 'Generate first'
+                          : 'Select ref ID…'}
+                    </option>
+                    {availableRefIds.map((id) => (
+                      <option key={id} value={String(id)}>
+                        {id}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-1 md:grid-cols-2">
+                <label className="flex flex-col gap-1 text-xs font-medium text-gray-700">
+                  UPI QR *
+                  <input
+                    ref={upiQrFileRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    disabled={!configured}
+                    className="text-sm file:mr-2 file:rounded file:border-0 file:bg-purple-50 file:px-2 file:py-1 file:text-xs"
+                  />
+                </label>
+                <label className="flex flex-col gap-1 text-xs font-medium text-gray-700">
+                  Identity proof *
+                  <input
+                    ref={identityFileRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp,application/pdf"
+                    disabled={!configured}
+                    className="text-sm file:mr-2 file:rounded file:border-0 file:bg-purple-50 file:px-2 file:py-1 file:text-xs"
+                  />
+                </label>
               </div>
               <div className="flex flex-wrap gap-2">
                 <button
@@ -422,27 +484,27 @@ export function AdminPage() {
                 <table className="w-full text-sm">
                   <thead className="bg-gray-50 text-left text-xs text-gray-500 uppercase">
                     <tr>
-                      <th className="px-3 py-2">Driver #</th>
+                      <th className="px-3 py-2">Driver</th>
                       <th className="px-3 py-2">Name</th>
                       <th className="px-3 py-2">Phone</th>
-                      <th className="px-3 py-2">Driver code</th>
-                      <th className="px-3 py-2">Linked QR</th>
-                      <th className="px-3 py-2">WhatsApp QR</th>
+                      <th className="px-3 py-2">Ref ID</th>
                       <th className="px-3 py-2">UPI QR</th>
+                      <th className="px-3 py-2">Identity</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
                     {drivers.map((d) => (
                       <tr key={d.id}>
-                        <td className="px-3 py-2 font-mono">{d.id}</td>
+                        <td className="px-3 py-2 font-mono" title={`Row id ${d.id}`}>
+                          {d.driver_code ?? d.driver_id ?? `D${d.id}`}
+                        </td>
                         <td className="px-3 py-2">{d.name}</td>
                         <td className="px-3 py-2">{d.phone}</td>
-                        <td className="px-3 py-2">{d.driver_code ?? d.driver_id ?? '—'}</td>
                         <td className="px-3 py-2 font-mono">{d.qr_ref_id ?? '—'}</td>
                         <td className="px-3 py-2 max-w-[100px] truncate">
-                          {d.qr_asset_url ? (
+                          {d.upi_qr_asset_url ? (
                             <a
-                              href={d.qr_asset_url}
+                              href={d.upi_qr_asset_url}
                               className="text-purple-600 hover:underline"
                               target="_blank"
                               rel="noreferrer"
@@ -453,15 +515,17 @@ export function AdminPage() {
                             '—'
                           )}
                         </td>
-                        <td className="px-3 py-2 max-w-[100px] truncate">
-                          {d.upi_qr_asset_url ? (
+                        <td className="px-3 py-2 max-w-[120px] truncate">
+                          {d.identity_asset_urls?.length ? (
                             <a
-                              href={d.upi_qr_asset_url}
+                              href={d.identity_asset_urls[0]}
                               className="text-purple-600 hover:underline"
                               target="_blank"
                               rel="noreferrer"
                             >
-                              link
+                              {d.identity_asset_urls.length > 1
+                                ? `${d.identity_asset_urls.length} files`
+                                : 'link'}
                             </a>
                           ) : (
                             '—'
