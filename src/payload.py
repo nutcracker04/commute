@@ -19,6 +19,28 @@ def _strip_utf8_bom(raw: bytes) -> bytes:
     return raw
 
 
+def _coalesce_provider_payload(d: dict[str, Any]) -> dict[str, Any]:
+    """Use inner object when the provider wraps the MSG91 body (data/payload/body)."""
+    for key in ("data", "payload", "body"):
+        inner = d.get(key)
+        if isinstance(inner, dict) and (
+            inner.get("customerNumber") is not None
+            or inner.get("messages") is not None
+            or inner.get("text") is not None
+            or inner.get("content") is not None
+            or inner.get("direction") is not None
+        ):
+            return inner
+        if isinstance(inner, str) and inner.strip():
+            try:
+                parsed = json.loads(inner.strip())
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                return _coalesce_provider_payload(parsed)
+    return d
+
+
 def parse_webhook_post_dict(content_type: str, raw: bytes) -> dict[str, Any]:
     """JSON object from webhook POST: raw JSON or form-encoded ``payload``/``body``/etc."""
     ct = (content_type or "").split(";")[0].strip().lower()
@@ -37,7 +59,7 @@ def parse_webhook_post_dict(content_type: str, raw: bytes) -> dict[str, Any]:
                     except json.JSONDecodeError as e:
                         raise ValueError(f"invalid JSON in form field {key!r}") from e
                     if isinstance(parsed, dict):
-                        return parsed
+                        return _coalesce_provider_payload(parsed)
         raise ValueError("form body has no JSON object field (payload/body/data/json)")
 
     try:
@@ -53,7 +75,7 @@ def parse_webhook_post_dict(content_type: str, raw: bytes) -> dict[str, Any]:
         raise ValueError("body is not valid JSON") from e
     if not isinstance(parsed, dict):
         raise ValueError("JSON root must be an object")
-    return parsed
+    return _coalesce_provider_payload(parsed)
 
 
 def _parse_json_if_string(val: Any) -> Any:
@@ -85,15 +107,20 @@ def _text_from_content_field(content_val: Any) -> str | None:
     return None
 
 
+def _normalize_wa_phone(raw: str) -> str:
+    """Digits only, no + or spaces (MSG91 / wa.me expect country code + national)."""
+    return "".join(ch for ch in raw if ch.isdigit())
+
+
 def _from_messages_array(messages_val: Any) -> tuple[str | None, str | None, int]:
     """Returns (message_id, text_body, timestamp)."""
-    parsed = _parse_json_if_string(messages_val)
+    parsed: Any = messages_val
+    if not isinstance(parsed, list):
+        parsed = _parse_json_if_string(messages_val)
     if not isinstance(parsed, list) or not parsed:
         return None, None, 0
     m0 = parsed[0]
     if not isinstance(m0, dict):
-        return None, None, 0
-    if str(m0.get("type") or "").lower() != "text":
         return None, None, 0
     tb = m0.get("text")
     body: str | None = None
@@ -101,6 +128,11 @@ def _from_messages_array(messages_val: Any) -> tuple[str | None, str | None, int
         b = tb.get("body")
         if isinstance(b, str):
             body = b.strip() or None
+    elif isinstance(tb, str) and tb.strip():
+        body = tb.strip()
+    msg_type = str(m0.get("type") or "").lower()
+    if msg_type and msg_type != "text" and not body:
+        return None, None, 0
     mid = m0.get("id")
     ts_raw = m0.get("timestamp")
     ts = 0
@@ -124,7 +156,9 @@ def _name_from_payload(payload: dict[str, Any]) -> str | None:
         if isinstance(val, str) and val.strip():
             return val.strip()
 
-    parsed_m = _parse_json_if_string(payload.get("messages"))
+    parsed_m = payload.get("messages")
+    if not isinstance(parsed_m, list):
+        parsed_m = _parse_json_if_string(payload.get("messages"))
     if isinstance(parsed_m, list) and parsed_m and isinstance(parsed_m[0], dict):
         contacts = parsed_m[0].get("contacts")
         if isinstance(contacts, list) and contacts and isinstance(contacts[0], dict):
@@ -148,7 +182,9 @@ def iter_inbound_text_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
     if direction is not None and str(direction) == "1":
         return out
 
-    from_phone = str(payload.get("customerNumber") or "").strip().lstrip("+")
+    from_phone = _normalize_wa_phone(
+        str(payload.get("customerNumber") or "").strip().lstrip("+")
+    )
 
     content_type = str(payload.get("contentType") or "").strip().lower()
     text_plain = payload.get("text")
@@ -164,11 +200,13 @@ def iter_inbound_text_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
         text_body = text_body or msg_text
 
     if not from_phone:
-        parsed_m = _parse_json_if_string(payload.get("messages"))
+        parsed_m = payload.get("messages")
+        if not isinstance(parsed_m, list):
+            parsed_m = _parse_json_if_string(payload.get("messages"))
         if isinstance(parsed_m, list) and parsed_m and isinstance(parsed_m[0], dict):
             wf = parsed_m[0].get("from")
             if wf:
-                from_phone = str(wf).strip().lstrip("+")
+                from_phone = _normalize_wa_phone(str(wf).strip().lstrip("+"))
 
     if not from_phone:
         return out
@@ -212,6 +250,11 @@ def iter_inbound_text_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def format_coupon_whatsapp_message(tpl: str, code: str, spaced: str) -> str:
+    """Fill template without str.format (extra `{` in user templates must not crash)."""
+    return (tpl or "").replace("{code_spaced}", spaced).replace("{code}", code)
+
+
 def iter_webhook_inbound_jobs(payload: dict[str, Any]) -> list[dict[str, Any]]:
     """Normalize inbound webhook POST JSON into queue jobs (single entrypoint for the Worker)."""
     return list(iter_inbound_text_messages(payload))
@@ -248,6 +291,12 @@ def raise_if_msg91_session_send_failed(
 
     st = parsed.get("status")
     if isinstance(st, str) and st.lower() in ("failed", "error", "fail"):
+        raise RuntimeError(f"MSG91 session message failed: {snippet}")
+    if isinstance(st, (int, float)) and int(st) >= 400:
+        raise RuntimeError(f"MSG91 session message failed: {snippet}")
+
+    code = parsed.get("code")
+    if isinstance(code, (int, float)) and int(code) != 0 and int(code) != 200:
         raise RuntimeError(f"MSG91 session message failed: {snippet}")
 
     err = parsed.get("error")

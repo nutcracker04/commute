@@ -7,6 +7,7 @@ import json
 import pytest
 
 from payload import (
+    format_coupon_whatsapp_message,
     iter_inbound_text_messages,
     parse_webhook_post_dict,
     raise_if_msg91_session_send_failed,
@@ -81,5 +82,71 @@ def test_msg91_meta_style_error_type_in_body_raises():
 
 def test_msg91_success_false_raises():
     body = json.dumps({"success": False, "message": "x"})
+    with pytest.raises(RuntimeError):
+        raise_if_msg91_session_send_failed(True, 200, body)
+
+
+def test_parse_webhook_nested_data_wrapper():
+    inner = {"customerNumber": "919876543210", "text": "hi", "direction": "0"}
+    wrapped = {"event": "inbound", "data": inner}
+    d = parse_webhook_post_dict(
+        "application/json", json.dumps(wrapped).encode()
+    )
+    assert d["customerNumber"] == "919876543210"
+    assert d["text"] == "hi"
+
+
+def test_inbound_messages_as_native_list():
+    jobs = iter_inbound_text_messages(
+        {
+            "direction": "0",
+            "customerNumber": "9198111222333",
+            "messages": [
+                {
+                    "type": "text",
+                    "id": "mid-1",
+                    "text": {"body": "Hello #RefID:7"},
+                }
+            ],
+        }
+    )
+    assert len(jobs) == 1
+    assert jobs[0]["wa_message_id"] == "mid-1"
+    assert "RefID:7" in jobs[0]["text"]
+
+
+def test_phone_digits_only_from_customer_number():
+    jobs = iter_inbound_text_messages(
+        {
+            "direction": "0",
+            "customerNumber": "+91 98765 43210",
+            "text": "ping",
+        }
+    )
+    assert jobs[0]["from_phone"] == "919876543210"
+
+
+def test_messages_missing_type_but_has_text_body():
+    jobs = iter_inbound_text_messages(
+        {
+            "direction": "0",
+            "customerNumber": "15550001111",
+            "messages": json.dumps(
+                [{"id": "x1", "text": {"body": "Hi #RefID:3"}}]
+            ),
+        }
+    )
+    assert len(jobs) == 1
+    assert jobs[0]["text"] == "Hi #RefID:3"
+
+
+def test_format_coupon_template_with_extra_braces():
+    tpl = "Code: {code} (save {percent}%)"  # would break str.format
+    out = format_coupon_whatsapp_message(tpl, "ABC", "A B C")
+    assert out == "Code: ABC (save {percent}%)"
+
+
+def test_msg91_numeric_error_status_in_body_raises():
+    body = json.dumps({"status": 400, "message": "bad request"})
     with pytest.raises(RuntimeError):
         raise_if_msg91_session_send_failed(True, 200, body)

@@ -28,6 +28,7 @@ from matching import (
 )
 from prefill import build_prefilled_text
 from payload import (
+    format_coupon_whatsapp_message,
     iter_webhook_inbound_jobs,
     parse_webhook_post_dict,
     raise_if_msg91_session_send_failed,
@@ -509,7 +510,9 @@ class Default(WorkerEntrypoint):
             return Response("Unknown QR", status=404)
 
         full_text = str(row["full_prefilled_text"])
-        phone = _str_env(self.env, "MSG91_INTEGRATED_NUMBER", "").lstrip("+")
+        phone = "".join(
+            c for c in _str_env(self.env, "MSG91_INTEGRATED_NUMBER", "") if c.isdigit()
+        )
         if not phone:
             return Response("WhatsApp number not configured", status=503)
 
@@ -1558,10 +1561,28 @@ class Default(WorkerEntrypoint):
         return Response("ok", headers={"content-type": "text/plain"})
 
     async def _handle_webhook_post(self, request) -> Response:
-        ct = _header_get(request.headers, "Content-Type") or ""
+        ct = (_header_get(request.headers, "Content-Type") or "").lower()
         try:
             raw = await self._request_body_bytes(request)
-            payload = parse_webhook_post_dict(ct, raw)
+            if "multipart/form-data" in ct:
+                boundary = _extract_multipart_boundary(
+                    _header_get(request.headers, "Content-Type") or ""
+                )
+                if not boundary:
+                    return Response("multipart boundary missing", status=400)
+                parts = _parse_multipart_form_data(raw, boundary)
+                nested = ""
+                for key in ("payload", "body", "data", "json", "message", "webhook"):
+                    nested = _multipart_text_field(parts, key)
+                    if nested:
+                        break
+                if not nested:
+                    return Response("multipart: no payload text field", status=400)
+                payload = parse_webhook_post_dict("application/json", nested.encode("utf-8"))
+            else:
+                payload = parse_webhook_post_dict(
+                    _header_get(request.headers, "Content-Type") or "", raw
+                )
         except ValueError as e:
             return Response(str(e) or "Bad request body", status=400)
 
@@ -1747,9 +1768,10 @@ class Default(WorkerEntrypoint):
                                 or _DEFAULT_COUPON_WA_TEMPLATE
                             )
                             spaced = format_coupon_spaced(code)
+                            coupon_msg = format_coupon_whatsapp_message(tpl, code, spaced)
                             sent = await self._send_whatsapp_session_text(
                                 from_phone,
-                                tpl.format(code=code, code_spaced=spaced),
+                                coupon_msg,
                             )
                             if sent:
                                 await _d1_run(
@@ -1799,16 +1821,19 @@ class Default(WorkerEntrypoint):
         """
         authkey = _str_env(self.env, "MSG91_AUTH_KEY", "")
         integrated = _str_env(self.env, "MSG91_INTEGRATED_NUMBER", "")
-        if not authkey or not integrated:
+        integ_digits = "".join(c for c in integrated if c.isdigit())
+        if not authkey or not integ_digits:
             return False
         send_url = _str_env(
             self.env,
             "MSG91_SESSION_SEND_URL",
             "https://api.msg91.com/api/v5/whatsapp/whatsapp-outbound-message/send-session-message/",
         )
-        recipient = to_phone.lstrip("+")
+        recipient = "".join(c for c in to_phone if c.isdigit())
+        if not recipient:
+            raise RuntimeError("MSG91 session message failed: empty recipient_number")
         payload = {
-            "integrated_number": integrated.lstrip("+"),
+            "integrated_number": integ_digits,
             "recipient_number": recipient,
             "content_type": "text",
             "text": body,

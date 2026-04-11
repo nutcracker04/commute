@@ -79,7 +79,8 @@ COUPON_WHATSAPP_TEMPLATE = "Here's your coupon — use it at checkout:\n\n*{code
 R2_PUBLIC_BASE = "https://pub-d64bbf1d4002461d905fdb95ed882f17.r2.dev"
 
 # Optional [vars]: MSG91_WEBHOOK_SECRET_HEADER = "X-Webhook-Secret"
-# Optional [vars]: MSG91_SESSION_SEND_URL = "https://api.msg91.com/api/v5/whatsapp/..."
+# Optional [vars]: MSG91_SESSION_SEND_URL — if sends fail, try the same path on
+# https://control.msg91.com/api/v5/whatsapp/... (some accounts/docs use control vs api host).
 #
 # Admin JSON API (POST/GET /api/qrs):
 #   wrangler secret put ADMIN_API_SECRET
