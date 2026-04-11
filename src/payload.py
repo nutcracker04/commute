@@ -132,8 +132,13 @@ def iter_inbound_text_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
     if not text_body:
         return out
 
+    # Do not drop inbound when contentType is e.g. "session" but text came from
+    # the stringified ``messages`` array (common for Meta-style payloads).
     if content_type and content_type != "text":
-        if not payload.get("text"):
+        has_top_text = isinstance(payload.get("text"), str) and str(
+            payload.get("text") or ""
+        ).strip()
+        if not has_top_text and not msg_text:
             return out
 
     wa_message_id = msg_id or ""

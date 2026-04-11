@@ -28,6 +28,8 @@ from matching import (
 )
 from prefill import build_prefilled_text
 from payload import iter_webhook_inbound_jobs
+from msg91_response import raise_if_msg91_session_send_failed
+from webhook_parse import parse_webhook_post_dict
 from scan_sessions_kv import (
     inbound_fallback_claim,
     inbound_fallback_release,
@@ -1554,15 +1556,12 @@ class Default(WorkerEntrypoint):
         return Response("ok", headers={"content-type": "text/plain"})
 
     async def _handle_webhook_post(self, request) -> Response:
-        body_text = await request.text()
-
+        ct = _header_get(request.headers, "Content-Type") or ""
         try:
-            payload = json.loads(body_text)
-        except json.JSONDecodeError:
-            return Response("Bad JSON", status=400)
-
-        if not isinstance(payload, dict):
-            return Response("Bad JSON", status=400)
+            raw = await self._request_body_bytes(request)
+            payload = parse_webhook_post_dict(ct, raw)
+        except ValueError as e:
+            return Response(str(e) or "Bad request body", status=400)
 
         wh_secret = _str_env(self.env, "MSG91_WEBHOOK_SECRET", "")
         if wh_secret:
@@ -1825,17 +1824,18 @@ class Default(WorkerEntrypoint):
                 }
             ),
         )
-        ok = bool(getattr(resp, "ok", False))
-        if not ok:
-            status = int(getattr(resp, "status", 0) or 0)
-            detail = ""
-            text_fn = getattr(resp, "text", None)
-            if callable(text_fn):
-                try:
-                    t = await text_fn()
-                    if t is not None:
-                        detail = str(t)[:500]
-                except Exception:
-                    detail = ""
-            raise RuntimeError(f"MSG91 session message failed: HTTP {status} {detail}")
+        status = int(getattr(resp, "status", 0) or 0)
+        body_str = ""
+        text_fn = getattr(resp, "text", None)
+        if callable(text_fn):
+            try:
+                t = await text_fn()
+                if t is not None:
+                    body_str = str(t)
+            except Exception:
+                body_str = ""
+
+        raise_if_msg91_session_send_failed(
+            bool(getattr(resp, "ok", False)), status, body_str
+        )
         return True
