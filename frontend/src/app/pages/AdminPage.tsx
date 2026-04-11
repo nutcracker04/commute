@@ -21,6 +21,19 @@ import {
 const PAGE_SIZE = 12;
 const MAX_BATCH = 100;
 
+function weekFilterLabel(w: WeekItem): string {
+  try {
+    const start = new Date(w.start_at * 1000).toLocaleDateString(undefined, {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    });
+    return `Week #${w.id} — ${start}`;
+  } catch {
+    return `Week #${w.id}`;
+  }
+}
+
 export function AdminPage() {
   const configured = isAdminApiConfigured();
 
@@ -556,7 +569,7 @@ export function AdminPage() {
                     <option value="">All weeks</option>
                     {weeks.map((w) => (
                       <option key={w.id} value={String(w.id)}>
-                        Week #{w.id}
+                        {weekFilterLabel(w)}
                       </option>
                     ))}
                   </select>
@@ -589,27 +602,6 @@ export function AdminPage() {
                   {dlcRunMsg}
                 </div>
               )}
-              <h3 className="text-sm font-medium text-gray-800">Weeks</h3>
-              <div className="overflow-x-auto border border-gray-200 rounded-lg max-h-40 overflow-y-auto">
-                <table className="w-full text-sm">
-                  <thead className="bg-gray-50 text-left text-xs text-gray-500 uppercase sticky top-0">
-                    <tr>
-                      <th className="px-3 py-2">Week #</th>
-                      <th className="px-3 py-2">Starts</th>
-                      <th className="px-3 py-2">Ends</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100">
-                    {weeks.map((w) => (
-                      <tr key={w.id}>
-                        <td className="px-3 py-2 font-mono">{w.id}</td>
-                        <td className="px-3 py-2">{w.start_at}</td>
-                        <td className="px-3 py-2">{w.end_at}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
               <h3 className="text-sm font-medium text-gray-800">Driver lead counts</h3>
               <div className="overflow-x-auto border border-gray-200 rounded-lg max-h-64 overflow-y-auto">
                 <table className="w-full text-sm">
