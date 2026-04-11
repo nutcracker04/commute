@@ -77,6 +77,11 @@ VITE_API_BASE_URL=https://commute-leads-worker.harshithsai24.workers.dev
 # GET /api/qrs/available-refs (default 5000). The admin UI pages through until all unassigned ids load.
 
 
+## Google Forms (optional)
+
+# On submit, Apps Script POSTs multipart to POST /api/drivers (same as admin UI). Setup: scripts/google-forms/README.md
+
+
 ## MSG91 Webhook Setup
 
 # URL to register in MSG91 Dashboard → WhatsApp → Webhook (New)
