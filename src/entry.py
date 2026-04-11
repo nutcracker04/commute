@@ -388,6 +388,24 @@ _DEFAULT_COUPON_WA_TEMPLATE = """Here's your coupon — use it at checkout:
 *{code}*"""
 
 
+def _wa_tail(phone: str, n: int = 4) -> str:
+    d = "".join(c for c in phone if c.isdigit())
+    return d[-n:] if len(d) >= n else "****"
+
+
+def _log_commute(event: str, **fields: Any) -> None:
+    """Structured line for Workers Logs / wrangler tail (no full PII)."""
+    try:
+        line = json.dumps(
+            {"commute": event, **fields},
+            separators=(",", ":"),
+            default=str,
+        )
+        print(line)
+    except Exception:
+        pass
+
+
 async def _allocate_unique_coupon_code(
     db: Any,
     prefix: str,
@@ -1584,6 +1602,7 @@ class Default(WorkerEntrypoint):
                     _header_get(request.headers, "Content-Type") or "", raw
                 )
         except ValueError as e:
+            _log_commute("webhook_body_error", err=str(e)[:200])
             return Response(str(e) or "Bad request body", status=400)
 
         wh_secret = _str_env(self.env, "MSG91_WEBHOOK_SECRET", "")
@@ -1591,10 +1610,27 @@ class Default(WorkerEntrypoint):
             hdr_name = _str_env(self.env, "MSG91_WEBHOOK_SECRET_HEADER", "X-Webhook-Secret")
             got = _header_get(request.headers, hdr_name)
             if got != wh_secret:
+                _log_commute("webhook_secret_reject", hdr=hdr_name[:32])
                 return Response("Invalid webhook secret", status=401)
 
         messages = iter_webhook_inbound_jobs(payload)
         received_at = int(time.time())
+        mv = payload.get("messages")
+        _log_commute(
+            "webhook_inbound",
+            ct=ct[:48],
+            body_bytes=len(raw),
+            jobs=len(messages),
+            has_customerNumber=payload.get("customerNumber") is not None,
+            messages_type=type(mv).__name__,
+            direction=payload.get("direction"),
+        )
+        if not messages:
+            _log_commute(
+                "webhook_zero_jobs",
+                contentType=payload.get("contentType"),
+                top_keys=sorted(str(k) for k in list(payload.keys())[:20]),
+            )
 
         for msg in messages:
             job = {
@@ -1606,7 +1642,8 @@ class Default(WorkerEntrypoint):
             }
             try:
                 await self.env.LEAD_QUEUE.send(to_js(job))
-            except Exception:
+            except Exception as qe:
+                _log_commute("lead_queue_send_failed", err=str(qe)[:300])
                 return Response("Queue unavailable", status=503)
 
         return Response(json.dumps({"received": len(messages)}), headers={"content-type": "application/json"})
@@ -1660,11 +1697,24 @@ class Default(WorkerEntrypoint):
             text = str(body.get("text", ""))
             wa_display_name = str(body.get("name", "")) or None
             if not wa_message_id or not from_phone:
+                _log_commute(
+                    "lead_job_skip",
+                    reason="missing_id_or_phone",
+                    has_wa_id=bool(wa_message_id),
+                    has_phone=bool(from_phone),
+                )
                 message.ack()
                 continue
 
             try:
                 ref = extract_ref_id(text)
+                _log_commute(
+                    "lead_job",
+                    wa_id_prefix=(wa_message_id[:16] if wa_message_id else ""),
+                    from_tail=_wa_tail(from_phone),
+                    text_len=len(text),
+                    ref_id=ref,
+                )
                 matched_qr_id: int | None = None
                 matched_session_id: str | None = None
                 method: str | None = None
@@ -1708,6 +1758,11 @@ class Default(WorkerEntrypoint):
                         matched_session_id = match.session_id
 
                 if matched_qr_id is not None and method:
+                    _log_commute(
+                        "lead_matched",
+                        ref_id=matched_qr_id,
+                        method=method,
+                    )
                     coupon_prefix = fetch_coupon_prefix(self.env)
                     rand_len = _int_env(self.env, "COUPON_RANDOM_LENGTH", 6)
                     changes = await _d1_run_changes(
@@ -1736,6 +1791,10 @@ class Default(WorkerEntrypoint):
                         wa_message_id,
                     )
                     if not row:
+                        _log_commute(
+                            "lead_row_missing_after_insert",
+                            wa_id_prefix=wa_message_id[:16],
+                        )
                         message.ack()
                         continue
                     lead_id = int(row["id"])
@@ -1769,11 +1828,20 @@ class Default(WorkerEntrypoint):
                             )
                             spaced = format_coupon_spaced(code)
                             coupon_msg = format_coupon_whatsapp_message(tpl, code, spaced)
+                            _log_commute(
+                                "coupon_send_attempt",
+                                lead_id=lead_id,
+                                code_len=len(code),
+                            )
                             sent = await self._send_whatsapp_session_text(
                                 from_phone,
                                 coupon_msg,
                             )
                             if sent:
+                                _log_commute(
+                                    "coupon_persisted",
+                                    lead_id=lead_id,
+                                )
                                 await _d1_run(
                                     self.env.DB,
                                     """
@@ -1788,16 +1856,26 @@ class Default(WorkerEntrypoint):
                             self.env.SCAN_KV, matched_session_id, now_ts
                         )
                 else:
+                    _log_commute(
+                        "lead_no_match",
+                        from_tail=_wa_tail(from_phone),
+                        candidates_hint="fallback_or_lcs_miss",
+                    )
                     if not await inbound_fallback_claim(
                         self.env.SCAN_KV, wa_message_id
                     ):
                         message.ack()
                         continue
                     try:
+                        _log_commute("fallback_reply_attempt", from_tail=_wa_tail(from_phone))
                         sent = await self._send_whatsapp_session_text(
                             from_phone, fallback_text
                         )
                         if not sent:
+                            _log_commute(
+                                "fallback_reply_skipped",
+                                reason="msg91_credentials_or_empty_recipient",
+                            )
                             await inbound_fallback_release(
                                 self.env.SCAN_KV, wa_message_id
                             )
@@ -1807,7 +1885,12 @@ class Default(WorkerEntrypoint):
                         )
                         raise
 
-            except Exception:
+            except Exception as ex:
+                _log_commute(
+                    "lead_job_error",
+                    err_type=type(ex).__name__,
+                    err=str(ex)[:400],
+                )
                 raise
 
             message.ack()
@@ -1823,6 +1906,12 @@ class Default(WorkerEntrypoint):
         integrated = _str_env(self.env, "MSG91_INTEGRATED_NUMBER", "")
         integ_digits = "".join(c for c in integrated if c.isdigit())
         if not authkey or not integ_digits:
+            _log_commute(
+                "msg91_skip",
+                reason="missing_MSG91_AUTH_KEY_or_MSG91_INTEGRATED_NUMBER",
+                has_authkey=bool(authkey),
+                integrated_tail=_wa_tail(integrated),
+            )
             return False
         send_url = _str_env(
             self.env,
@@ -1832,6 +1921,14 @@ class Default(WorkerEntrypoint):
         recipient = "".join(c for c in to_phone if c.isdigit())
         if not recipient:
             raise RuntimeError("MSG91 session message failed: empty recipient_number")
+        host = urlparse(send_url).netloc or "?"
+        _log_commute(
+            "msg91_request",
+            host=host,
+            recipient_tail=_wa_tail(recipient),
+            integrated_tail=_wa_tail(integ_digits),
+            body_len=len(body),
+        )
         payload = {
             "integrated_number": integ_digits,
             "recipient_number": recipient,
@@ -1865,4 +1962,5 @@ class Default(WorkerEntrypoint):
         raise_if_msg91_session_send_failed(
             bool(getattr(resp, "ok", False)), status, body_str
         )
+        _log_commute("msg91_ok", http_status=status, response_len=len(body_str))
         return True
