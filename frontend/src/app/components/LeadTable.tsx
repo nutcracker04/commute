@@ -29,40 +29,56 @@ export function LeadTable({ leads, currentPage, itemsPerPage }: LeadTableProps) 
   }
 
   return (
-    <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden h-full flex flex-col">
+    <div className="flex h-full flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
       {/* Mobile: card list */}
-      <div className="divide-y divide-gray-100 sm:hidden overflow-auto">
-        {paginatedLeads.map((lead) => (
-          <div key={lead.id} className="px-3 py-2">
-            <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
-              <div className="min-w-0">
-                <div className="text-sm font-medium text-gray-900 leading-5 truncate">
-                  {lead.name}
+      <div className="min-h-0 flex-1 overflow-auto bg-gray-50 p-2 sm:hidden">
+        <div className="space-y-3">
+          {paginatedLeads.map((lead) => (
+            <article
+              key={lead.id}
+              className="overflow-hidden rounded-2xl bg-white px-4 py-3.5 shadow-sm ring-1 ring-gray-950/[0.06]"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <h3 className="truncate text-[15px] font-semibold leading-snug text-gray-900">
+                    {lead.name}
+                  </h3>
+                  <p className="mt-1 break-all text-sm leading-snug text-gray-600">{lead.contact}</p>
                 </div>
-                <div className="text-sm text-gray-600 leading-5 truncate">{lead.contact}</div>
+                <div className="shrink-0 text-right">
+                  <time
+                    className="block text-xs font-medium text-gray-500"
+                    dateTime={lead.timestamp.toISOString()}
+                  >
+                    {format(lead.timestamp, 'MMM d, yyyy')}
+                  </time>
+                  <span className="mt-0.5 block text-[11px] text-gray-400">
+                    {format(lead.timestamp, 'h:mm a')}
+                  </span>
+                </div>
               </div>
-
-              <div className="text-[13px] text-gray-500 text-right leading-4 whitespace-nowrap">
-                <div>{format(lead.timestamp, 'MMM dd, yyyy')}</div>
-                <div>{format(lead.timestamp, 'hh:mm a')}</div>
+              <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-gray-100 pt-3">
+                {lead.qrRefId ? (
+                  <span className="inline-flex items-baseline gap-1.5 rounded-md bg-gray-50 px-2 py-1 text-xs">
+                    <span className="font-medium text-gray-400">Ref</span>
+                    <span className="font-mono font-medium text-gray-800">{lead.qrRefId}</span>
+                  </span>
+                ) : (
+                  <span className="text-xs text-gray-400">No QR ref</span>
+                )}
+                {lead.couponCode ? (
+                  <span className="inline-flex rounded-md bg-violet-50 px-2 py-1 font-mono text-xs font-medium text-violet-900 ring-1 ring-violet-200/70">
+                    {lead.couponCode}
+                  </span>
+                ) : null}
               </div>
-            </div>
-
-            <div className="mt-1 grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-2">
-              <div className="text-xs text-gray-500 leading-4">QR ref</div>
-              <div className="text-xs font-mono text-gray-900 leading-4 truncate">
-                {lead.qrRefId}
-              </div>
-            </div>
-            {lead.couponCode ? (
-              <div className="mt-1 text-xs font-mono text-purple-800">Coupon: {lead.couponCode}</div>
-            ) : null}
-          </div>
-        ))}
+            </article>
+          ))}
+        </div>
       </div>
 
       {/* Desktop: table */}
-      <div className="hidden sm:block overflow-auto">
+      <div className="hidden min-h-0 flex-1 overflow-auto sm:block">
         <table className="w-full">
           <thead className="bg-gray-50 border-b border-gray-200">
             <tr>

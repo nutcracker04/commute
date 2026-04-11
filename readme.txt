@@ -129,15 +129,31 @@ npx wrangler dev
 # Start frontend locally (proxies /api to wrangler on port 8787)
 cd frontend && npm run dev
 
-# Run new migrations locally (after prior chain is applied)
-npx wrangler d1 execute commute-leads --local --file=migrations/0009_commission_schema.sql
-npx wrangler d1 execute commute-leads --local --file=migrations/0010_drop_scan_sessions.sql
-npx wrangler d1 execute commute-leads --local --file=migrations/0011_domain_alignment.sql
-npx wrangler d1 execute commute-leads --local --file=migrations/0012_drop_processed_inbound.sql
-npx wrangler d1 execute commute-leads --local --file=migrations/0013_rename_promo_to_coupon.sql
-npx wrangler d1 execute commute-leads --local --file=migrations/0014_drop_driver_external_qr_ref.sql
-npx wrangler d1 execute commute-leads --local --file=migrations/0015_backfill_driver_code.sql
-npx wrangler d1 execute commute-leads --local --file=migrations/0016_drivers_qr_ref_id.sql
+# Local D1 schema: if `wrangler dev` errors with missing tables (e.g. no such table: weeks), your
+# SQLite file is behind. Apply migrations in order. Old clones often stopped at 0003; run 0004–0016:
+for f in \
+  migrations/0004_leads_name.sql \
+  migrations/0005_standalone_qrs.sql \
+  migrations/0006_leads_nullable_event.sql \
+  migrations/0007_scan_sessions_per_scan.sql \
+  migrations/0008_drop_legacy_events_and_physical_qrs.sql \
+  migrations/0009_commission_schema.sql \
+  migrations/0010_drop_scan_sessions.sql \
+  migrations/0011_domain_alignment.sql \
+  migrations/0012_drop_processed_inbound.sql \
+  migrations/0013_rename_promo_to_coupon.sql \
+  migrations/0014_drop_driver_external_qr_ref.sql \
+  migrations/0015_backfill_driver_code.sql \
+  migrations/0016_drivers_qr_ref_id.sql
+do
+  npx wrangler d1 execute commute-leads --local --file="$f"
+done
+
+# If you already have qrs/weeks/current schema and only need newer patches, run the matching files only
+# (do not re-run the full loop above).
 
 # Weekly DLC cron: Sunday 06:00 UTC (see wrangler.toml [triggers]); manual run:
 # curl -X POST -H "X-Admin-Key: <secret>" https://<worker>/api/admin/run-dlc
+#
+# Test the scheduled handler locally (Python Worker): `npx wrangler dev --local --test-scheduled`,
+# then GET http://localhost:8787/cdn-cgi/handler/scheduled (Wrangler’s /__scheduled route may 404 for Python).

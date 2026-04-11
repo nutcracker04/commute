@@ -53,7 +53,7 @@ export function LeadFilters({ filters, onFilterChange, onReset }: LeadFiltersPro
               placeholder="Search name..."
               value={filters.name}
               onChange={(e) => onFilterChange('name', e.target.value)}
-              className="w-full pl-8 pr-2.5 py-1.5 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              className="w-full rounded-md border border-gray-300 py-2 pl-8 pr-2.5 text-base focus:border-transparent focus:ring-2 focus:ring-blue-500 sm:py-1.5 sm:text-sm"
             />
           </div>
         </div>
@@ -70,7 +70,7 @@ export function LeadFilters({ filters, onFilterChange, onReset }: LeadFiltersPro
               placeholder="Search contact..."
               value={filters.contact}
               onChange={(e) => onFilterChange('contact', e.target.value)}
-              className="w-full pl-8 pr-2.5 py-1.5 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              className="w-full rounded-md border border-gray-300 py-2 pl-8 pr-2.5 text-base focus:border-transparent focus:ring-2 focus:ring-blue-500 sm:py-1.5 sm:text-sm"
             />
           </div>
         </div>
@@ -87,7 +87,7 @@ export function LeadFilters({ filters, onFilterChange, onReset }: LeadFiltersPro
               placeholder="QR number…"
               value={filters.refId}
               onChange={(e) => onFilterChange('refId', e.target.value)}
-              className="w-full pl-8 pr-2.5 py-1.5 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              className="w-full rounded-md border border-gray-300 py-2 pl-8 pr-2.5 text-base focus:border-transparent focus:ring-2 focus:ring-blue-500 sm:py-1.5 sm:text-sm"
             />
           </div>
         </div>
@@ -103,7 +103,7 @@ export function LeadFilters({ filters, onFilterChange, onReset }: LeadFiltersPro
               id="startDate"
               value={filters.startDate}
               onChange={(e) => onFilterChange('startDate', e.target.value)}
-              className="w-full pl-8 pr-2.5 py-1.5 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              className="w-full rounded-md border border-gray-300 py-2 pl-8 pr-2.5 text-base focus:border-transparent focus:ring-2 focus:ring-blue-500 sm:py-1.5 sm:text-sm"
             />
           </div>
         </div>
@@ -119,7 +119,7 @@ export function LeadFilters({ filters, onFilterChange, onReset }: LeadFiltersPro
               id="endDate"
               value={filters.endDate}
               onChange={(e) => onFilterChange('endDate', e.target.value)}
-              className="w-full pl-8 pr-2.5 py-1.5 text-sm border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              className="w-full rounded-md border border-gray-300 py-2 pl-8 pr-2.5 text-base focus:border-transparent focus:ring-2 focus:ring-blue-500 sm:py-1.5 sm:text-sm"
             />
           </div>
         </div>

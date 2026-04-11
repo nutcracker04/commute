@@ -1746,19 +1746,20 @@ class Default(WorkerEntrypoint):
                                 or _DEFAULT_COUPON_WA_TEMPLATE
                             )
                             spaced = format_coupon_spaced(code)
-                            await self._send_whatsapp_session_text(
+                            sent = await self._send_whatsapp_session_text(
                                 from_phone,
                                 tpl.format(code=code, code_spaced=spaced),
                             )
-                            await _d1_run(
-                                self.env.DB,
-                                """
-                                UPDATE leads SET coupon_code_sent = ?
-                                WHERE id = ? AND (coupon_code_sent IS NULL OR coupon_code_sent = '')
-                                """,
-                                code,
-                                lead_id,
-                            )
+                            if sent:
+                                await _d1_run(
+                                    self.env.DB,
+                                    """
+                                    UPDATE leads SET coupon_code_sent = ?
+                                    WHERE id = ? AND (coupon_code_sent IS NULL OR coupon_code_sent = '')
+                                    """,
+                                    code,
+                                    lead_id,
+                                )
                     if method == "lcs" and matched_session_id is not None:
                         await ss_claim_session(
                             self.env.SCAN_KV, matched_session_id, now_ts
@@ -1770,9 +1771,13 @@ class Default(WorkerEntrypoint):
                         message.ack()
                         continue
                     try:
-                        await self._send_whatsapp_session_text(
+                        sent = await self._send_whatsapp_session_text(
                             from_phone, fallback_text
                         )
+                        if not sent:
+                            await inbound_fallback_release(
+                                self.env.SCAN_KV, wa_message_id
+                            )
                     except Exception:
                         await inbound_fallback_release(
                             self.env.SCAN_KV, wa_message_id
@@ -1784,11 +1789,17 @@ class Default(WorkerEntrypoint):
 
             message.ack()
 
-    async def _send_whatsapp_session_text(self, to_phone: str, body: str) -> None:
+    async def _send_whatsapp_session_text(self, to_phone: str, body: str) -> bool:
+        """Send WhatsApp session text via MSG91.
+
+        Returns True if the HTTP request succeeded. Returns False when MSG91
+        credentials are missing (nothing was sent). Raises on network/HTTP
+        failure so the queue consumer can retry.
+        """
         authkey = _str_env(self.env, "MSG91_AUTH_KEY", "")
         integrated = _str_env(self.env, "MSG91_INTEGRATED_NUMBER", "")
         if not authkey or not integrated:
-            return
+            return False
         send_url = _str_env(
             self.env,
             "MSG91_SESSION_SEND_URL",
@@ -1804,7 +1815,7 @@ class Default(WorkerEntrypoint):
         from js import fetch  # type: ignore[import-not-found]
 
         headers = to_js({"authkey": authkey, "Content-Type": "application/json"})
-        await fetch(
+        resp = await fetch(
             send_url,
             to_js(
                 {
@@ -1814,3 +1825,17 @@ class Default(WorkerEntrypoint):
                 }
             ),
         )
+        ok = bool(getattr(resp, "ok", False))
+        if not ok:
+            status = int(getattr(resp, "status", 0) or 0)
+            detail = ""
+            text_fn = getattr(resp, "text", None)
+            if callable(text_fn):
+                try:
+                    t = await text_fn()
+                    if t is not None:
+                        detail = str(t)[:500]
+                except Exception:
+                    detail = ""
+            raise RuntimeError(f"MSG91 session message failed: HTTP {status} {detail}")
+        return True

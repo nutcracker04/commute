@@ -21,23 +21,32 @@ export function Pagination({
   const endItem = Math.min(currentPage * itemsPerPage, totalItems);
 
   return (
-    <div className="bg-white rounded-lg shadow-sm border border-gray-200 px-3 sm:px-4 py-2.5 mt-3">
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <div className="flex items-center gap-2 sm:gap-3">
-          <div className="text-xs text-gray-700 hidden sm:block">
-            Showing <span className="font-medium">{startItem}</span> to{' '}
-            <span className="font-medium">{endItem}</span> of{' '}
-            <span className="font-medium">{totalItems}</span> results
+    <div className="mt-3 rounded-lg border border-gray-200 bg-white px-3 py-3 shadow-sm sm:px-4 sm:py-2.5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-2">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+          <div className="text-xs text-gray-600 sm:text-gray-700">
+            <span className="sm:hidden">
+              <span className="font-medium text-gray-900">
+                {startItem}–{endItem}
+              </span>
+              <span className="text-gray-500"> of </span>
+              <span className="font-medium text-gray-900">{totalItems}</span>
+            </span>
+            <span className="hidden sm:inline">
+              Showing <span className="font-medium">{startItem}</span> to{' '}
+              <span className="font-medium">{endItem}</span> of{' '}
+              <span className="font-medium">{totalItems}</span> results
+            </span>
           </div>
-          <div className="flex items-center gap-1.5">
-            <label htmlFor="itemsPerPage" className="text-xs text-gray-700">
-              Per page:
+          <div className="flex items-center gap-2">
+            <label htmlFor="itemsPerPage" className="shrink-0 text-xs text-gray-700">
+              Per page
             </label>
             <select
               id="itemsPerPage"
               value={itemsPerPage}
               onChange={(e) => onItemsPerPageChange(Number(e.target.value))}
-              className="border border-gray-300 rounded-md px-2 py-1 text-xs focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              className="min-h-11 rounded-md border border-gray-300 px-3 py-2 text-base focus:border-transparent focus:ring-2 focus:ring-blue-500 sm:min-h-0 sm:px-2 sm:py-1 sm:text-xs"
             >
               <option value={10}>10</option>
               <option value={25}>25</option>
@@ -47,17 +56,20 @@ export function Pagination({
           </div>
         </div>
 
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center justify-center gap-2 sm:justify-end sm:gap-1.5">
           <button
+            type="button"
             onClick={() => onPageChange(currentPage - 1)}
             disabled={currentPage === 1}
-            className="px-2 py-1.5 border border-gray-300 rounded-md text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-white"
+            className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-md border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-white sm:min-h-0 sm:min-w-0 sm:px-2 sm:py-1.5"
+            aria-label="Previous page"
           >
-            <ChevronLeft className="w-3.5 h-3.5" />
+            <ChevronLeft className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
           </button>
-          
-          <div className="text-xs text-gray-700 sm:hidden px-1">
-            Page <span className="font-medium">{currentPage}</span> /{' '}
+
+          <div className="min-w-[5.5rem] px-1 text-center text-xs text-gray-700 sm:hidden">
+            Page <span className="font-semibold text-gray-900">{currentPage}</span>
+            <span className="text-gray-400"> / </span>
             <span className="font-medium">{totalPages}</span>
           </div>
 
@@ -97,11 +109,13 @@ export function Pagination({
           </div>
 
           <button
+            type="button"
             onClick={() => onPageChange(currentPage + 1)}
             disabled={currentPage === totalPages}
-            className="px-2 py-1.5 border border-gray-300 rounded-md text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-white"
+            className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-md border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-white sm:min-h-0 sm:min-w-0 sm:px-2 sm:py-1.5"
+            aria-label="Next page"
           >
-            <ChevronRight className="w-3.5 h-3.5" />
+            <ChevronRight className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
           </button>
         </div>
       </div>
