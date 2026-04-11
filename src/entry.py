@@ -27,7 +27,12 @@ from matching import (
     pick_best_match,
 )
 from prefill import build_prefilled_text
-from payload import iter_webhook_inbound_jobs
+from payload import (
+    format_coupon_whatsapp_message,
+    iter_webhook_inbound_jobs,
+    parse_webhook_post_dict,
+    raise_if_msg91_session_send_failed,
+)
 from scan_sessions_kv import (
     inbound_fallback_claim,
     inbound_fallback_release,
@@ -383,6 +388,24 @@ _DEFAULT_COUPON_WA_TEMPLATE = """Here's your coupon — use it at checkout:
 *{code}*"""
 
 
+def _wa_tail(phone: str, n: int = 4) -> str:
+    d = "".join(c for c in phone if c.isdigit())
+    return d[-n:] if len(d) >= n else "****"
+
+
+def _log_commute(event: str, **fields: Any) -> None:
+    """Structured line for Workers Logs / wrangler tail (no full PII)."""
+    try:
+        line = json.dumps(
+            {"commute": event, **fields},
+            separators=(",", ":"),
+            default=str,
+        )
+        print(line)
+    except Exception:
+        pass
+
+
 async def _allocate_unique_coupon_code(
     db: Any,
     prefix: str,
@@ -505,7 +528,9 @@ class Default(WorkerEntrypoint):
             return Response("Unknown QR", status=404)
 
         full_text = str(row["full_prefilled_text"])
-        phone = _str_env(self.env, "MSG91_INTEGRATED_NUMBER", "").lstrip("+")
+        phone = "".join(
+            c for c in _str_env(self.env, "MSG91_INTEGRATED_NUMBER", "") if c.isdigit()
+        )
         if not phone:
             return Response("WhatsApp number not configured", status=503)
 
@@ -1554,25 +1579,58 @@ class Default(WorkerEntrypoint):
         return Response("ok", headers={"content-type": "text/plain"})
 
     async def _handle_webhook_post(self, request) -> Response:
-        body_text = await request.text()
-
+        ct = (_header_get(request.headers, "Content-Type") or "").lower()
         try:
-            payload = json.loads(body_text)
-        except json.JSONDecodeError:
-            return Response("Bad JSON", status=400)
-
-        if not isinstance(payload, dict):
-            return Response("Bad JSON", status=400)
+            raw = await self._request_body_bytes(request)
+            if "multipart/form-data" in ct:
+                boundary = _extract_multipart_boundary(
+                    _header_get(request.headers, "Content-Type") or ""
+                )
+                if not boundary:
+                    return Response("multipart boundary missing", status=400)
+                parts = _parse_multipart_form_data(raw, boundary)
+                nested = ""
+                for key in ("payload", "body", "data", "json", "message", "webhook"):
+                    nested = _multipart_text_field(parts, key)
+                    if nested:
+                        break
+                if not nested:
+                    return Response("multipart: no payload text field", status=400)
+                payload = parse_webhook_post_dict("application/json", nested.encode("utf-8"))
+            else:
+                payload = parse_webhook_post_dict(
+                    _header_get(request.headers, "Content-Type") or "", raw
+                )
+        except ValueError as e:
+            _log_commute("webhook_body_error", err=str(e)[:200])
+            return Response(str(e) or "Bad request body", status=400)
 
         wh_secret = _str_env(self.env, "MSG91_WEBHOOK_SECRET", "")
         if wh_secret:
             hdr_name = _str_env(self.env, "MSG91_WEBHOOK_SECRET_HEADER", "X-Webhook-Secret")
             got = _header_get(request.headers, hdr_name)
             if got != wh_secret:
+                _log_commute("webhook_secret_reject", hdr=hdr_name[:32])
                 return Response("Invalid webhook secret", status=401)
 
         messages = iter_webhook_inbound_jobs(payload)
         received_at = int(time.time())
+        mv = payload.get("messages")
+        _log_commute(
+            "webhook_inbound",
+            ct=ct[:48],
+            body_bytes=len(raw),
+            jobs=len(messages),
+            has_customerNumber=payload.get("customerNumber") is not None,
+            messages_type=type(mv).__name__,
+            direction=payload.get("direction"),
+        )
+        if not messages:
+            _log_commute(
+                "webhook_zero_jobs",
+                contentType=payload.get("contentType"),
+                top_keys=sorted(str(k) for k in list(payload.keys())[:20]),
+            )
 
         for msg in messages:
             job = {
@@ -1584,7 +1642,8 @@ class Default(WorkerEntrypoint):
             }
             try:
                 await self.env.LEAD_QUEUE.send(to_js(job))
-            except Exception:
+            except Exception as qe:
+                _log_commute("lead_queue_send_failed", err=str(qe)[:300])
                 return Response("Queue unavailable", status=503)
 
         return Response(json.dumps({"received": len(messages)}), headers={"content-type": "application/json"})
@@ -1638,11 +1697,24 @@ class Default(WorkerEntrypoint):
             text = str(body.get("text", ""))
             wa_display_name = str(body.get("name", "")) or None
             if not wa_message_id or not from_phone:
+                _log_commute(
+                    "lead_job_skip",
+                    reason="missing_id_or_phone",
+                    has_wa_id=bool(wa_message_id),
+                    has_phone=bool(from_phone),
+                )
                 message.ack()
                 continue
 
             try:
                 ref = extract_ref_id(text)
+                _log_commute(
+                    "lead_job",
+                    wa_id_prefix=(wa_message_id[:16] if wa_message_id else ""),
+                    from_tail=_wa_tail(from_phone),
+                    text_len=len(text),
+                    ref_id=ref,
+                )
                 matched_qr_id: int | None = None
                 matched_session_id: str | None = None
                 method: str | None = None
@@ -1686,6 +1758,11 @@ class Default(WorkerEntrypoint):
                         matched_session_id = match.session_id
 
                 if matched_qr_id is not None and method:
+                    _log_commute(
+                        "lead_matched",
+                        ref_id=matched_qr_id,
+                        method=method,
+                    )
                     coupon_prefix = fetch_coupon_prefix(self.env)
                     rand_len = _int_env(self.env, "COUPON_RANDOM_LENGTH", 6)
                     changes = await _d1_run_changes(
@@ -1714,6 +1791,10 @@ class Default(WorkerEntrypoint):
                         wa_message_id,
                     )
                     if not row:
+                        _log_commute(
+                            "lead_row_missing_after_insert",
+                            wa_id_prefix=wa_message_id[:16],
+                        )
                         message.ack()
                         continue
                     lead_id = int(row["id"])
@@ -1746,11 +1827,21 @@ class Default(WorkerEntrypoint):
                                 or _DEFAULT_COUPON_WA_TEMPLATE
                             )
                             spaced = format_coupon_spaced(code)
+                            coupon_msg = format_coupon_whatsapp_message(tpl, code, spaced)
+                            _log_commute(
+                                "coupon_send_attempt",
+                                lead_id=lead_id,
+                                code_len=len(code),
+                            )
                             sent = await self._send_whatsapp_session_text(
                                 from_phone,
-                                tpl.format(code=code, code_spaced=spaced),
+                                coupon_msg,
                             )
                             if sent:
+                                _log_commute(
+                                    "coupon_persisted",
+                                    lead_id=lead_id,
+                                )
                                 await _d1_run(
                                     self.env.DB,
                                     """
@@ -1765,16 +1856,26 @@ class Default(WorkerEntrypoint):
                             self.env.SCAN_KV, matched_session_id, now_ts
                         )
                 else:
+                    _log_commute(
+                        "lead_no_match",
+                        from_tail=_wa_tail(from_phone),
+                        candidates_hint="fallback_or_lcs_miss",
+                    )
                     if not await inbound_fallback_claim(
                         self.env.SCAN_KV, wa_message_id
                     ):
                         message.ack()
                         continue
                     try:
+                        _log_commute("fallback_reply_attempt", from_tail=_wa_tail(from_phone))
                         sent = await self._send_whatsapp_session_text(
                             from_phone, fallback_text
                         )
                         if not sent:
+                            _log_commute(
+                                "fallback_reply_skipped",
+                                reason="msg91_credentials_or_empty_recipient",
+                            )
                             await inbound_fallback_release(
                                 self.env.SCAN_KV, wa_message_id
                             )
@@ -1784,7 +1885,12 @@ class Default(WorkerEntrypoint):
                         )
                         raise
 
-            except Exception:
+            except Exception as ex:
+                _log_commute(
+                    "lead_job_error",
+                    err_type=type(ex).__name__,
+                    err=str(ex)[:400],
+                )
                 raise
 
             message.ack()
@@ -1798,16 +1904,33 @@ class Default(WorkerEntrypoint):
         """
         authkey = _str_env(self.env, "MSG91_AUTH_KEY", "")
         integrated = _str_env(self.env, "MSG91_INTEGRATED_NUMBER", "")
-        if not authkey or not integrated:
+        integ_digits = "".join(c for c in integrated if c.isdigit())
+        if not authkey or not integ_digits:
+            _log_commute(
+                "msg91_skip",
+                reason="missing_MSG91_AUTH_KEY_or_MSG91_INTEGRATED_NUMBER",
+                has_authkey=bool(authkey),
+                integrated_tail=_wa_tail(integrated),
+            )
             return False
         send_url = _str_env(
             self.env,
             "MSG91_SESSION_SEND_URL",
             "https://api.msg91.com/api/v5/whatsapp/whatsapp-outbound-message/send-session-message/",
         )
-        recipient = to_phone.lstrip("+")
+        recipient = "".join(c for c in to_phone if c.isdigit())
+        if not recipient:
+            raise RuntimeError("MSG91 session message failed: empty recipient_number")
+        host = urlparse(send_url).netloc or "?"
+        _log_commute(
+            "msg91_request",
+            host=host,
+            recipient_tail=_wa_tail(recipient),
+            integrated_tail=_wa_tail(integ_digits),
+            body_len=len(body),
+        )
         payload = {
-            "integrated_number": integrated.lstrip("+"),
+            "integrated_number": integ_digits,
             "recipient_number": recipient,
             "content_type": "text",
             "text": body,
@@ -1825,17 +1948,19 @@ class Default(WorkerEntrypoint):
                 }
             ),
         )
-        ok = bool(getattr(resp, "ok", False))
-        if not ok:
-            status = int(getattr(resp, "status", 0) or 0)
-            detail = ""
-            text_fn = getattr(resp, "text", None)
-            if callable(text_fn):
-                try:
-                    t = await text_fn()
-                    if t is not None:
-                        detail = str(t)[:500]
-                except Exception:
-                    detail = ""
-            raise RuntimeError(f"MSG91 session message failed: HTTP {status} {detail}")
+        status = int(getattr(resp, "status", 0) or 0)
+        body_str = ""
+        text_fn = getattr(resp, "text", None)
+        if callable(text_fn):
+            try:
+                t = await text_fn()
+                if t is not None:
+                    body_str = str(t)
+            except Exception:
+                body_str = ""
+
+        raise_if_msg91_session_send_failed(
+            bool(getattr(resp, "ok", False)), status, body_str
+        )
+        _log_commute("msg91_ok", http_status=status, response_len=len(body_str))
         return True
