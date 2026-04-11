@@ -10,6 +10,50 @@ from __future__ import annotations
 import hashlib
 import json
 from typing import Any
+from urllib.parse import parse_qs
+
+
+def _strip_utf8_bom(raw: bytes) -> bytes:
+    if raw.startswith(b"\xef\xbb\xbf"):
+        return raw[3:]
+    return raw
+
+
+def parse_webhook_post_dict(content_type: str, raw: bytes) -> dict[str, Any]:
+    """JSON object from webhook POST: raw JSON or form-encoded ``payload``/``body``/etc."""
+    ct = (content_type or "").split(";")[0].strip().lower()
+    blob = _strip_utf8_bom(raw)
+
+    if ct == "application/x-www-form-urlencoded":
+        text = blob.decode("utf-8", errors="replace")
+        qs = parse_qs(text, keep_blank_values=True)
+        for key in ("payload", "body", "data", "json", "message"):
+            vals = qs.get(key)
+            if vals and vals[0]:
+                inner = vals[0].strip()
+                if inner:
+                    try:
+                        parsed = json.loads(inner)
+                    except json.JSONDecodeError as e:
+                        raise ValueError(f"invalid JSON in form field {key!r}") from e
+                    if isinstance(parsed, dict):
+                        return parsed
+        raise ValueError("form body has no JSON object field (payload/body/data/json)")
+
+    try:
+        text = blob.decode("utf-8")
+    except UnicodeDecodeError as e:
+        raise ValueError("body is not valid UTF-8") from e
+    text = text.strip()
+    if not text:
+        raise ValueError("empty body")
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ValueError("body is not valid JSON") from e
+    if not isinstance(parsed, dict):
+        raise ValueError("JSON root must be an object")
+    return parsed
 
 
 def _parse_json_if_string(val: Any) -> Any:
@@ -171,3 +215,41 @@ def iter_inbound_text_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
 def iter_webhook_inbound_jobs(payload: dict[str, Any]) -> list[dict[str, Any]]:
     """Normalize inbound webhook POST JSON into queue jobs (single entrypoint for the Worker)."""
     return list(iter_inbound_text_messages(payload))
+
+
+def raise_if_msg91_session_send_failed(
+    http_ok: bool, status: int, body: str
+) -> None:
+    """Raise when MSG91 session send failed (HTTP or JSON error in 200 body)."""
+    detail = (body or "").strip()
+    snippet = detail[:500] if detail else ""
+
+    if not http_ok:
+        raise RuntimeError(
+            f"MSG91 session message failed: HTTP {int(status)} {snippet}"
+        )
+
+    if not detail:
+        return
+
+    try:
+        parsed: Any = json.loads(detail)
+    except json.JSONDecodeError:
+        return
+
+    if not isinstance(parsed, dict):
+        return
+
+    if str(parsed.get("type") or "").lower() == "error":
+        raise RuntimeError(f"MSG91 session message failed: {snippet}")
+
+    if parsed.get("success") is False:
+        raise RuntimeError(f"MSG91 session message failed: {snippet}")
+
+    st = parsed.get("status")
+    if isinstance(st, str) and st.lower() in ("failed", "error", "fail"):
+        raise RuntimeError(f"MSG91 session message failed: {snippet}")
+
+    err = parsed.get("error")
+    if err not in (None, False, "", {}):
+        raise RuntimeError(f"MSG91 session message failed: {snippet}")
