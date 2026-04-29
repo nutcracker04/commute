@@ -24,7 +24,12 @@ from typing import Any
 from urllib.parse import parse_qs, parse_qsl, quote, urlencode, urlparse
 
 from payload import iter_webhook_inbound_jobs
-from whatsapp_outbound import build_whatsapp_outbound_request
+from whatsapp_outbound import (
+    build_whatsapp_outbound_request,
+    json_string_embed,
+    outbound_authorization_value,
+    resolve_whatsapp_outbound_url,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -413,7 +418,8 @@ class UniversalProvider(WhatsAppProvider):
     ) -> tuple[str, dict[str, str], dict[str, Any] | str] | None:
         auth_header = _str_env(env, "WHATSAPP_OUTBOUND_AUTH_HEADER", "").strip()
         auth_secret = _str_env(env, "WHATSAPP_OUTBOUND_AUTH_SECRET", "").strip()
-        base_url = _str_env(env, "WHATSAPP_OUTBOUND_URL", "").strip().rstrip("/")
+        full_url = _str_env(env, "WHATSAPP_OUTBOUND_URL", "").strip().rstrip("/")
+        base_url = full_url or resolve_whatsapp_outbound_url(env).strip().rstrip("/")
         if not base_url:
             return None
 
@@ -426,7 +432,7 @@ class UniversalProvider(WhatsAppProvider):
             "to": recipient,
             "from": business,
             "text": text,
-            "text_escaped": text.replace("\\", "\\\\").replace('"', '\\"'),
+            "text_escaped": json_string_embed(text),
             "text_urlencoded": quote(text, safe=""),
             "text_json_urlencoded": quote(json.dumps({"type": "text", "text": text}), safe=""),
             "base_url": base_url,
@@ -453,7 +459,9 @@ class UniversalProvider(WhatsAppProvider):
         content_type = self._cfg(env, "WA_OUTBOUND_CONTENT_TYPE", "application/json")
         headers: dict[str, str] = {"Content-Type": content_type}
         if auth_header and auth_secret:
-            headers[auth_header] = auth_secret
+            headers[auth_header] = outbound_authorization_value(
+                env, auth_secret, header_name=auth_header
+            )
 
         return final_url, headers, body_str
 

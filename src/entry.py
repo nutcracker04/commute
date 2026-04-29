@@ -28,6 +28,7 @@ from matching import (
 )
 from prefill import build_prefilled_text
 from providers import get_provider
+from whatsapp_outbound import outbound_response_api_error
 from scan_sessions_kv import (
     inbound_fallback_claim,
     inbound_fallback_release,
@@ -1664,6 +1665,11 @@ class Default(WorkerEntrypoint):
                                 from_phone,
                                 tpl.format(code=code, code_spaced=spaced),
                             )
+                            if not sent:
+                                print(
+                                    "[lead-queue] coupon WhatsApp skipped: build_outbound returned None "
+                                    f"(lead_id={lead_id} wa_message_id={wa_message_id[:20]}…)"
+                                )
                             if sent:
                                 await _d1_run(
                                     self.env.DB,
@@ -1712,6 +1718,9 @@ class Default(WorkerEntrypoint):
         """
         built = get_provider(self.env).build_outbound(self.env, to_phone=to_phone, text=body)
         if built is None:
+            dbg = str(getattr(self.env, "WHATSAPP_OUTBOUND_DEBUG", "") or "").strip().lower()
+            if dbg in ("1", "true", "yes", "on"):
+                print("[wa-outbound] build_outbound returned None (check WHATSAPP_OUTBOUND_URL / provider)")
             return False
         send_url, hdr_map, payload = built
         from js import fetch  # type: ignore[import-not-found]
@@ -1729,16 +1738,54 @@ class Default(WorkerEntrypoint):
             ),
         )
         ok = bool(getattr(resp, "ok", False))
+        status = int(getattr(resp, "status", 0) or 0)
+        text_fn = getattr(resp, "text", None)
+        resp_text = ""
+        if callable(text_fn):
+            try:
+                t = await text_fn()
+                if t is not None:
+                    resp_text = str(t)
+            except Exception:
+                resp_text = ""
+
+        dbg = str(getattr(self.env, "WHATSAPP_OUTBOUND_DEBUG", "") or "").strip().lower()
+        if dbg in ("1", "true", "yes", "on"):
+            suf = to_phone.strip()[-4:] if len(to_phone.strip()) >= 4 else "****"
+            sec = str(getattr(self.env, "WHATSAPP_OUTBOUND_AUTH_SECRET", "") or "").strip()
+            ah = str(getattr(self.env, "WHATSAPP_OUTBOUND_AUTH_HEADER", "") or "").strip()
+            sent_bearer = sec.lower().startswith("bearer ")
+            bp = str(getattr(self.env, "WHATSAPP_OUTBOUND_BEARER_PREFIX", "") or "").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+                "on",
+            )
+            print(
+                f"[wa-outbound] POST status={status} ok={ok} to_endswith={suf} "
+                f"out_chars={len(body)} resp_chars={len(resp_text)} "
+                f"auth_header_name={ah!r} secret_len={len(sec)} secret_starts_with_bearer={sent_bearer} "
+                f"bearer_prefix_env={bp} outbound_header_keys={list(hdr_map.keys())}"
+            )
+            if resp_text:
+                print(f"[wa-outbound] response_prefix={resp_text[:500]!r}")
+
         if not ok:
-            status = int(getattr(resp, "status", 0) or 0)
-            detail = ""
-            text_fn = getattr(resp, "text", None)
-            if callable(text_fn):
-                try:
-                    t = await text_fn()
-                    if t is not None:
-                        detail = str(t)[:500]
-                except Exception:
-                    detail = ""
-            raise RuntimeError(f"WhatsApp outbound failed: HTTP {status} {detail}")
+            detail = resp_text[:500] if resp_text else ""
+            hint = ""
+            if status == 401:
+                sec = str(getattr(self.env, "WHATSAPP_OUTBOUND_AUTH_SECRET", "") or "").strip()
+                if not sec:
+                    hint = " (401: WHATSAPP_OUTBOUND_AUTH_SECRET is empty — set the Worker secret.)"
+                else:
+                    hint = (
+                        " (401: SEWS rejected credentials. Confirm the live API key; try "
+                        "WHATSAPP_OUTBOUND_BEARER_PREFIX=false for raw Authorization value, "
+                        "or WHATSAPP_OUTBOUND_AUTH_HEADER=X-Api-Key with prefix false per SEWS docs.)"
+                    )
+            raise RuntimeError(f"WhatsApp outbound failed: HTTP {status} {detail}{hint}")
+
+        api_err = outbound_response_api_error(resp_text)
+        if api_err:
+            raise RuntimeError(f"WhatsApp outbound API error: {api_err}")
         return True
