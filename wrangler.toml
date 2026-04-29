@@ -3,7 +3,6 @@ main = "src/entry.py"
 compatibility_date = "2026-04-03"
 compatibility_flags = ["python_workers"]
 
-# Replace with output of: npx wrangler d1 create commute-leads
 [[d1_databases]]
 binding = "DB"
 database_name = "commute-leads"
@@ -33,61 +32,49 @@ max_retries = 5
 binding = "SCAN_KV"
 id = "cb105a7763e84da5b202b47cf1fbcd7f"
 
-# Create bucket when R2 is enabled on the account: npx wrangler r2 bucket create commute-leads-assets
 [[r2_buckets]]
 binding = "DRIVER_ASSETS"
 bucket_name = "commute-leads-assets"
 
 [triggers]
-# Sunday 06:00 UTC — 11:30 IST; weekly DLC aggregation (use SUN — numeric 0 is invalid on Cloudflare)
+# Weekly DLC (Sunday 06:00 UTC)
 crons = ["0 6 * * SUN"]
 
 [vars]
-# WhatsApp prefilled text template — passed to build_prefilled_text()
+# Prefill (build_prefilled_text)
 WA_GREETING = "Hey!"
 WA_CONTEXT_TEXT = "the offer"
 WA_REQUEST_TEXT = "I would like more information"
-# TTL for scan session in KV after GET /r/{id} (6h)
+
+# Scan session TTL after GET /r/{id} (seconds)
 SCAN_TTL_SECONDS = "21600"
-# LCS fuzzy match: default always attributes to closest active scan_session (no dropped leads).
-# Set LCS_REQUIRE_CONFIDENCE = "true" to restore min_score / min_gap gating.
+
+# LCS fuzzy match
 LCS_REQUIRE_CONFIDENCE = "false"
-# When fuzzy scores tie after greeting match: "recent" = last scanned QR; "first" = earliest scan in the window.
 LCS_TIE_BREAK = "recent"
 LCS_MIN_SCORE = "0.35"
 LCS_MIN_GAP = "0.08"
 LCS_RECENCY_TAU_MINUTES = "60"
 LCS_MAX_CANDIDATES = "500"
+
 FALLBACK_REPLY_TEXT = "We could not link this message to a campaign. Please scan the QR code again or tell us which event you mean."
-# e.g. https://commute-leads-worker.<subdomain>.workers.dev — for GET /integration Polarr hints
 PUBLIC_BASE_URL = "https://commute-leads-worker.harshithsai24.workers.dev"
-# Admin API (see comments at bottom for ADMIN_API_SECRET)
+
+# Admin API
 ADMIN_API_SECRET_HEADER = "X-Admin-Key"
 ADMIN_PROVISION_MAX_COUNT = "500"
 ADMIN_LIST_MAX_LIMIT = "500"
-# Max page size for GET /api/qrs/available-refs (admin driver ref dropdown).
 ADMIN_AVAILABLE_REFS_MAX_LIMIT = "5000"
-# Minutes east of UTC for DLC week boundaries (330 = IST).
+
+# DLC week boundary (minutes east of UTC; 330 = IST)
 DLC_WEEK_TZ_OFFSET_MINUTES = "330"
-# Brand prefix + random body (no brands table). Legacy env keys still read: PROMO_CODE_PREFIX, BRAND_COUPON_PREFIX.
+
+# Coupons ({code}, {code_spaced} in COUPON_WHATSAPP_TEMPLATE)
 COUPON_CODE_PREFIX = "SINZA"
-# Random suffix length (default 6). Charset omits ambiguous 0/O/1/I/L.
 COUPON_RANDOM_LENGTH = "6"
-# After a matched lead. Use {code} (compact) and/or {code_spaced} (groups of 3). Legacy: PROMO_WHATSAPP_TEMPLATE.
 COUPON_WHATSAPP_TEMPLATE = "Here's your coupon — use it at checkout:\n\n*{code}*"
-# Public base URL for R2 objects (custom domain or r2.dev), no trailing slash. Optional until uploads used.
+
+# R2 public base (no trailing slash)
 R2_PUBLIC_BASE = "https://pub-d64bbf1d4002461d905fdb95ed882f17.r2.dev"
 
-# Optional [vars]: MSG91_WEBHOOK_SECRET_HEADER = "X-Webhook-Secret"
-# Optional [vars]: MSG91_SESSION_SEND_URL = "https://api.msg91.com/api/v5/whatsapp/..."
-#
-# Admin JSON API (POST/GET /api/qrs):
-#   wrangler secret put ADMIN_API_SECRET
-# Optional [vars]: ADMIN_API_SECRET_HEADER, ADMIN_PROVISION_MAX_COUNT, ADMIN_LIST_MAX_LIMIT
-
-# Secrets (wrangler secret put …):
-#   MSG91_AUTH_KEY
-#   MSG91_INTEGRATED_NUMBER
-#   MSG91_WEBHOOK_SECRET   (optional; match MSG91_WEBHOOK_SECRET_HEADER from dashboard)
-#   ADMIN_API_SECRET         (required for /api/qrs)
-#   Local dev: .dev.vars (gitignored)
+# WhatsApp env names and wrangler secrets: readme.txt

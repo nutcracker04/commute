@@ -27,7 +27,7 @@ from matching import (
     pick_best_match,
 )
 from prefill import build_prefilled_text
-from payload import iter_webhook_inbound_jobs
+from providers import get_provider
 from scan_sessions_kv import (
     inbound_fallback_claim,
     inbound_fallback_release,
@@ -416,7 +416,7 @@ class Default(WorkerEntrypoint):
             return await self._handle_redirect(request, path)
         if self._is_whatsapp_webhook_path(path):
             if method == "GET":
-                return await self._handle_webhook_get()
+                return await self._handle_webhook_get(request)
             if method == "POST":
                 return await self._handle_webhook_post(request)
         if path == "/integration":
@@ -482,9 +482,9 @@ class Default(WorkerEntrypoint):
 
     @staticmethod
     def _is_whatsapp_webhook_path(path: str) -> bool:
-        if path in ("/webhook/whatsapp", "/webhook/msg91"):
+        if path == "/webhook/whatsapp":
             return True
-        return path.endswith("/webhook/whatsapp") or path.endswith("/webhook/msg91")
+        return path.endswith("/webhook/whatsapp")
 
     async def _handle_redirect(self, request, path: str) -> Response:
         token = path.removeprefix("/r/").strip("/").split("/")[0]
@@ -505,7 +505,7 @@ class Default(WorkerEntrypoint):
             return Response("Unknown QR", status=404)
 
         full_text = str(row["full_prefilled_text"])
-        phone = _str_env(self.env, "MSG91_INTEGRATED_NUMBER", "").lstrip("+")
+        phone = _str_env(self.env, "WHATSAPP_BUSINESS_PHONE", "").lstrip("+")
         if not phone:
             return Response("WhatsApp number not configured", status=503)
 
@@ -1549,29 +1549,28 @@ class Default(WorkerEntrypoint):
             d1_run=_d1_run,
         )
 
-    async def _handle_webhook_get(self) -> Response:
-        """Inbound provider may probe the callback URL; always return 200."""
+    async def _handle_webhook_get(self, request) -> Response:
+        """Inbound provider may probe the callback URL.
+
+        Delegates to the provider adapter first (e.g. Meta hub.challenge echo);
+        falls through to a plain-200 'ok' if the provider has nothing to return.
+        """
+        provider = get_provider(self.env)
+        result = provider.handle_get(request, self.env)
+        if result is not None:
+            body, status = result
+            return Response(body, status=status, headers={"content-type": "text/plain"})
         return Response("ok", headers={"content-type": "text/plain"})
 
     async def _handle_webhook_post(self, request) -> Response:
         body_text = await request.text()
+        content_type = _header_get(request.headers, "Content-Type") or ""
 
-        try:
-            payload = json.loads(body_text)
-        except json.JSONDecodeError:
-            return Response("Bad JSON", status=400)
+        provider = get_provider(self.env)
+        if not provider.verify_inbound(request, body_text, self.env):
+            return Response("Invalid webhook secret", status=401)
 
-        if not isinstance(payload, dict):
-            return Response("Bad JSON", status=400)
-
-        wh_secret = _str_env(self.env, "MSG91_WEBHOOK_SECRET", "")
-        if wh_secret:
-            hdr_name = _str_env(self.env, "MSG91_WEBHOOK_SECRET_HEADER", "X-Webhook-Secret")
-            got = _header_get(request.headers, hdr_name)
-            if got != wh_secret:
-                return Response("Invalid webhook secret", status=401)
-
-        messages = iter_webhook_inbound_jobs(payload)
+        messages = provider.parse_inbound(body_text, content_type)
         received_at = int(time.time())
 
         for msg in messages:
@@ -1738,15 +1737,10 @@ class Default(WorkerEntrypoint):
                         if code:
                             tpl = (
                                 _str_env(self.env, "COUPON_WHATSAPP_TEMPLATE", "").strip()
-                                or _str_env(
-                                    self.env,
-                                    "PROMO_WHATSAPP_TEMPLATE",
-                                    "",
-                                ).strip()
                                 or _DEFAULT_COUPON_WA_TEMPLATE
                             )
                             spaced = format_coupon_spaced(code)
-                            sent = await self._send_whatsapp_session_text(
+                            sent = await self._send_whatsapp_outbound_text(
                                 from_phone,
                                 tpl.format(code=code, code_spaced=spaced),
                             )
@@ -1771,7 +1765,7 @@ class Default(WorkerEntrypoint):
                         message.ack()
                         continue
                     try:
-                        sent = await self._send_whatsapp_session_text(
+                        sent = await self._send_whatsapp_outbound_text(
                             from_phone, fallback_text
                         )
                         if not sent:
@@ -1789,39 +1783,28 @@ class Default(WorkerEntrypoint):
 
             message.ack()
 
-    async def _send_whatsapp_session_text(self, to_phone: str, body: str) -> bool:
-        """Send WhatsApp session text via MSG91.
+    async def _send_whatsapp_outbound_text(self, to_phone: str, body: str) -> bool:
+        """POST outbound text to the configured WhatsApp HTTP API.
 
-        Returns True if the HTTP request succeeded. Returns False when MSG91
-        credentials are missing (nothing was sent). Raises on network/HTTP
-        failure so the queue consumer can retry.
+        Returns False when WHATSAPP_OUTBOUND_URL is unset (nothing sent).
+        Raises RuntimeError if the URL is set but required env bindings are missing.
+        Raises on non-OK HTTP so the queue consumer can retry.
         """
-        authkey = _str_env(self.env, "MSG91_AUTH_KEY", "")
-        integrated = _str_env(self.env, "MSG91_INTEGRATED_NUMBER", "")
-        if not authkey or not integrated:
+        built = get_provider(self.env).build_outbound(self.env, to_phone=to_phone, text=body)
+        if built is None:
             return False
-        send_url = _str_env(
-            self.env,
-            "MSG91_SESSION_SEND_URL",
-            "https://api.msg91.com/api/v5/whatsapp/whatsapp-outbound-message/send-session-message/",
-        )
-        recipient = to_phone.lstrip("+")
-        payload = {
-            "integrated_number": integrated.lstrip("+"),
-            "recipient_number": recipient,
-            "content_type": "text",
-            "text": body,
-        }
+        send_url, hdr_map, payload = built
         from js import fetch  # type: ignore[import-not-found]
 
-        headers = to_js({"authkey": authkey, "Content-Type": "application/json"})
+        body_str = payload if isinstance(payload, str) else json.dumps(payload)
+        headers = to_js(hdr_map)
         resp = await fetch(
             send_url,
             to_js(
                 {
                     "method": "POST",
                     "headers": headers,
-                    "body": json.dumps(payload),
+                    "body": body_str,
                 }
             ),
         )
@@ -1837,5 +1820,5 @@ class Default(WorkerEntrypoint):
                         detail = str(t)[:500]
                 except Exception:
                     detail = ""
-            raise RuntimeError(f"MSG91 session message failed: HTTP {status} {detail}")
+            raise RuntimeError(f"WhatsApp outbound failed: HTTP {status} {detail}")
         return True

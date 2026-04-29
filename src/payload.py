@@ -1,8 +1,8 @@
 """
 Parse WhatsApp inbound webhook JSON (text messages).
 
-Typical payloads include customerNumber, contentType, text, content (stringified JSON),
-messages (stringified JSON array).
+Supports common BSP / aggregator shapes: flat customer fields, optional stringified
+`messages` arrays (including Cloud-API-like entries with from, id, text.body).
 """
 
 from __future__ import annotations
@@ -70,10 +70,9 @@ def _from_messages_array(messages_val: Any) -> tuple[str | None, str | None, int
 
 
 def _name_from_payload(payload: dict[str, Any]) -> str | None:
-    """Extract sender display name from MSG91 webhook payload.
+    """Extract sender display name from common webhook shapes.
 
-    Checks top-level name/senderName fields first, then falls back to
-    the contacts profile inside the messages array (Meta Cloud API format).
+    Checks top-level name fields first, then contacts.profile inside a messages array.
     """
     for key in ("customerName", "name", "senderName", "sender_name"):
         val = payload.get(key)
