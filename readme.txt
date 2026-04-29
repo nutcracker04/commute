@@ -17,10 +17,9 @@ There are two kinds of runtime config, kept and pushed separately:
   Managed via secrets.json (gitignored). Template: secrets.example.json.
 
   Known secrets:
-    ADMIN_API_SECRET              — Admin API bearer token
-    WHATSAPP_OUTBOUND_AUTH_SECRET — Auth value sent to your BSP / Graph API
-    WHATSAPP_WEBHOOK_SECRET       — Inbound webhook shared secret / Meta verify token
-    WHATSAPP_APP_SECRET           — Meta only: HMAC-SHA256 signing secret
+    WHATSAPP_OUTBOUND_AUTH_SECRET — Outbound sends only (BSP / Graph API auth header value)
+
+  Inbound WhatsApp webhooks and admin JSON APIs are not authenticated in the worker.
 
 
 ## scripts/sync.sh — one command to push everything
@@ -65,13 +64,10 @@ There are two kinds of runtime config, kept and pushed separately:
 
 
 
-## Generate Secrets
+## Generate Secrets (optional)
 
-# Admin API secret (use same value for worker + frontend .env)
+# Outbound BSP auth only — if your send API needs a token
 openssl rand -hex 32
-
-# Optional WhatsApp webhook shared secret (if you validate inbound with a custom header)
-openssl rand -hex 20
 
 
 ## Worker (Cloudflare Workers)
@@ -130,8 +126,7 @@ cp secrets.example.json secrets.json   # secrets.json is gitignored
 #   WHATSAPP_PROVIDER             = "meta"
 #   WHATSAPP_OUTBOUND_URL         = "https://graph.facebook.com/v25.0/{phone_number_id}/messages"
 #   WHATSAPP_OUTBOUND_AUTH_HEADER = "Authorization"
-#   Secrets: WHATSAPP_OUTBOUND_AUTH_SECRET = "Bearer <token>", WHATSAPP_APP_SECRET = "<app secret>"
-#   WHATSAPP_WEBHOOK_SECRET = Verify Token for hub.challenge echo
+#   Secrets: WHATSAPP_OUTBOUND_AUTH_SECRET = "Bearer <token>"
 
 # Example: 360dialog
 #   WHATSAPP_PROVIDER             = "360dialog"
@@ -180,10 +175,7 @@ cp secrets.example.json secrets.json   # secrets.json is gitignored
 #   WA_OUTBOUND_URL_TEMPLATE   = ""  (optional: if BSP encodes recipient in URL)
 #   Placeholders: {to}, {from}, {text_escaped}, {text_urlencoded}, {text_json_urlencoded}, {base_url}, {app_name}
 #
-# Verification (3 strategies — pick one):
-#   WA_VERIFY_MODE        = "none" | "header" | "hmac-sha256" | "hmac-sha1-twilio"
-#   WA_VERIFY_HEADER      = "X-Signature"                   (header containing sig/secret)
-#   WA_VERIFY_SECRET_VAR  = "MY_WEBHOOK_SECRET"             (env var holding the key)
+# Inbound POST verification (WA_VERIFY_*) is not implemented — all webhooks are accepted.
 #
 # GET challenge:
 #   WA_GET_CHALLENGE      = "none" | "meta"
@@ -198,7 +190,7 @@ cp secrets.example.json secrets.json   # secrets.json is gitignored
 
 # Verify
 curl https://commute-leads-worker.harshithsai24.workers.dev/health
-curl -H "X-Admin-Key: <secret>" https://commute-leads-worker.harshithsai24.workers.dev/api/leads
+curl https://commute-leads-worker.harshithsai24.workers.dev/api/leads
 
 
 ## Frontend (Cloudflare Pages)
@@ -219,8 +211,7 @@ cd frontend && npm run build && npx wrangler pages deploy dist --project-name=co
 ## Frontend Environment Variables (set in Cloudflare Pages dashboard)
 # Settings → Environment variables → Production
 
-VITE_ADMIN_API_SECRET=<same value as ADMIN_API_SECRET>
-VITE_API_BASE_URL=https://commute-leads-worker.harshithsai24.workers.dev
+# VITE_API_BASE_URL=https://commute-leads-worker.harshithsai24.workers.dev
 
 # Optional worker var (wrangler.toml [vars]): ADMIN_AVAILABLE_REFS_MAX_LIMIT — cap per request for
 # GET /api/qrs/available-refs (default 5000). The admin UI pages through until all unassigned ids load.
@@ -236,15 +227,7 @@ VITE_API_BASE_URL=https://commute-leads-worker.harshithsai24.workers.dev
 # Callback URL (register in your BSP / Cloud API webhook settings)
 https://commute-leads-worker.harshithsai24.workers.dev/webhook/whatsapp
 
-# Verification (driven by WA_VERIFY_MODE — set by preset or manually):
-#   none               – no verification (default, Gupshup, WATI)
-#   header             – shared-secret header match (generic BSPs)
-#   hmac-sha256        – Meta Cloud API (X-Hub-Signature-256 using WHATSAPP_APP_SECRET)
-#   hmac-sha1-twilio   – Twilio (X-Twilio-Signature using WHATSAPP_AUTH_TOKEN)
-#
-# GET challenge (driven by WA_GET_CHALLENGE):
-#   meta               – echo hub.challenge when hub.verify_token matches WHATSAPP_WEBHOOK_SECRET
-#   none               – plain 200 "ok"
+# GET challenge (WA_GET_CHALLENGE): meta echoes hub.challenge; none returns plain "ok".
 #
 # Inbound parsing (driven by WA_INBOUND_UNWRAP + WA_INBOUND_*_PATH):
 #   none  – parse JSON, extract fields via dot-paths
@@ -315,7 +298,7 @@ done
 # (do not re-run the full loop above).
 
 # Weekly DLC cron: Sunday 06:00 UTC (see wrangler.toml [triggers]); manual run:
-# curl -X POST -H "X-Admin-Key: <secret>" https://<worker>/api/admin/run-dlc
+# curl -X POST https://<worker>/api/admin/run-dlc
 #
 # Test the scheduled handler locally (Python Worker): `npx wrangler dev --local --test-scheduled`,
 # then GET http://localhost:8787/cdn-cgi/handler/scheduled (Wrangler’s /__scheduled route may 404 for Python).

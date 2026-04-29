@@ -6,12 +6,11 @@ import { LeadFilters } from '../components/LeadFilters';
 import { LeadTable, Lead } from '../components/LeadTable';
 import { Pagination } from '../components/Pagination';
 import { useLayoutActions } from '../components/LayoutActionsContext';
-import { listLeads, isAdminApiConfigured } from '../lib/adminApi';
+import { listLeads } from '../lib/adminApi';
 
 const PAGE_SIZE = 25;
 
 export function LeadsPage() {
-  const configured = isAdminApiConfigured();
   const { setActions } = useLayoutActions();
 
   const [leads, setLeads] = useState<Lead[]>([]);
@@ -42,8 +41,6 @@ export function LeadsPage() {
   const offset = (currentPage - 1) * itemsPerPage;
 
   useEffect(() => {
-    if (!configured) return;
-
     let cancelled = false;
     setLoading(true);
     setError(null);
@@ -85,7 +82,7 @@ export function LeadsPage() {
       });
 
     return () => { cancelled = true; };
-  }, [configured, offset, itemsPerPage, filters.refId, filters.contact, filters.startDate, filters.endDate, filters.name]);
+  }, [offset, itemsPerPage, filters.refId, filters.contact, filters.startDate, filters.endDate, filters.name]);
 
   const totalPages = Math.ceil(total / itemsPerPage);
 
@@ -145,12 +142,6 @@ export function LeadsPage() {
             onReset={handleResetFilters}
           />
         </div>
-
-        {!configured && (
-          <div className="mt-4 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-            Admin API not configured. Set <code>VITE_ADMIN_API_SECRET</code> in your <code>.env</code> file.
-          </div>
-        )}
 
         {error && (
           <div className="mt-4 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">

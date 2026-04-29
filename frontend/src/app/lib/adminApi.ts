@@ -1,6 +1,5 @@
 /**
  * Worker admin API for QR inventory and leads.
- * Auth: header from VITE_ADMIN_API_SECRET_HEADER (default X-Admin-Key) + VITE_ADMIN_API_SECRET.
  * Base URL: VITE_API_BASE_URL (empty = same origin; use Vite dev proxy to wrangler).
  */
 
@@ -52,22 +51,9 @@ export type DlcItem = {
 };
 
 const apiBase = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '';
-const adminSecret = (import.meta.env.VITE_ADMIN_API_SECRET as string | undefined) ?? '';
-const adminHeaderName =
-  (import.meta.env.VITE_ADMIN_API_SECRET_HEADER as string | undefined)?.trim() || 'X-Admin-Key';
 
-export function isAdminApiConfigured(): boolean {
-  return Boolean(adminSecret);
-}
-
-function adminHeaders(includeJson = false): HeadersInit {
-  const h: Record<string, string> = {
-    [adminHeaderName]: adminSecret,
-  };
-  if (includeJson) {
-    h['Content-Type'] = 'application/json';
-  }
-  return h;
+function jsonHeaders(): HeadersInit {
+  return { 'Content-Type': 'application/json' };
 }
 
 function apiUrl(path: string): string {
@@ -80,7 +66,7 @@ export async function createQrs(body: {
 }): Promise<{ created: number; items: QrItem[] }> {
   const res = await fetch(apiUrl('/api/qrs'), {
     method: 'POST',
-    headers: adminHeaders(true),
+    headers: jsonHeaders(),
     body: JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({}));
@@ -104,7 +90,6 @@ export async function listQrs(params: {
   const qs = sp.toString();
   const res = await fetch(apiUrl(`/api/qrs${qs ? `?${qs}` : ''}`), {
     method: 'GET',
-    headers: adminHeaders(false),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -128,7 +113,6 @@ export async function listDrivers(params: {
   const qs = sp.toString();
   const res = await fetch(apiUrl(`/api/drivers${qs ? `?${qs}` : ''}`), {
     method: 'GET',
-    headers: adminHeaders(false),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -152,7 +136,6 @@ export async function listAvailableRefIds(params: {
   const qs = sp.toString();
   const res = await fetch(apiUrl(`/api/qrs/available-refs${qs ? `?${qs}` : ''}`), {
     method: 'GET',
-    headers: adminHeaders(false),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -170,7 +153,6 @@ export async function listAvailableRefIds(params: {
 export async function createDriver(form: FormData): Promise<{ id: number }> {
   const res = await fetch(apiUrl('/api/drivers'), {
     method: 'POST',
-    headers: adminHeaders(false),
     body: form,
   });
   const data = await res.json().catch(() => ({}));
@@ -190,7 +172,6 @@ export async function listWeeks(params: {
   const qs = sp.toString();
   const res = await fetch(apiUrl(`/api/weeks${qs ? `?${qs}` : ''}`), {
     method: 'GET',
-    headers: adminHeaders(false),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -216,7 +197,6 @@ export async function listDlc(params: {
   const qs = sp.toString();
   const res = await fetch(apiUrl(`/api/dlc${qs ? `?${qs}` : ''}`), {
     method: 'GET',
-    headers: adminHeaders(false),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -233,7 +213,6 @@ export async function listDlc(params: {
 export async function runDlcAggregation(): Promise<Record<string, unknown>> {
   const res = await fetch(apiUrl('/api/admin/run-dlc'), {
     method: 'POST',
-    headers: adminHeaders(false),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -261,7 +240,6 @@ export async function listLeads(params: {
   const qs = sp.toString();
   const res = await fetch(apiUrl(`/api/leads${qs ? `?${qs}` : ''}`), {
     method: 'GET',
-    headers: adminHeaders(false),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {

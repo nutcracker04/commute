@@ -37,19 +37,15 @@ binding = "DRIVER_ASSETS"
 bucket_name = "commute-leads-assets"
 
 [triggers]
-# Weekly DLC (Sunday 06:00 UTC)
 crons = ["0 6 * * SUN"]
 
 [vars]
-# Prefill (build_prefilled_text)
 WA_GREETING = "Hey!"
 WA_CONTEXT_TEXT = "the offer"
 WA_REQUEST_TEXT = "I would like more information"
 
-# Scan session TTL after GET /r/{id} (seconds)
 SCAN_TTL_SECONDS = "21600"
 
-# LCS fuzzy match
 LCS_REQUIRE_CONFIDENCE = "false"
 LCS_TIE_BREAK = "recent"
 LCS_MIN_SCORE = "0.35"
@@ -60,21 +56,21 @@ LCS_MAX_CANDIDATES = "500"
 FALLBACK_REPLY_TEXT = "We could not link this message to a campaign. Please scan the QR code again or tell us which event you mean."
 PUBLIC_BASE_URL = "https://commute-leads-worker.harshithsai24.workers.dev"
 
-# Admin API
-ADMIN_API_SECRET_HEADER = "X-Admin-Key"
 ADMIN_PROVISION_MAX_COUNT = "500"
 ADMIN_LIST_MAX_LIMIT = "500"
 ADMIN_AVAILABLE_REFS_MAX_LIMIT = "5000"
 
-# DLC week boundary (minutes east of UTC; 330 = IST)
 DLC_WEEK_TZ_OFFSET_MINUTES = "330"
 
-# Coupons ({code}, {code_spaced} in COUPON_WHATSAPP_TEMPLATE)
 COUPON_CODE_PREFIX = "SINZA"
 COUPON_RANDOM_LENGTH = "6"
 COUPON_WHATSAPP_TEMPLATE = "Here's your coupon — use it at checkout:\n\n*{code}*"
 
-# R2 public base (no trailing slash)
 R2_PUBLIC_BASE = "https://pub-d64bbf1d4002461d905fdb95ed882f17.r2.dev"
 
-# WhatsApp env names and wrangler secrets: readme.txt
+# Outbound WhatsApp send (generic provider + WHATSAPP_OUTBOUND_BODY_TEMPLATE):
+#   Option A — full URL: WHATSAPP_OUTBOUND_URL = "https://HOST/message/v1/client/message/send"
+#   Option B — base only: WHATSAPP_OUTBOUND_API_BASE = "https://HOST" (path below is appended)
+WHATSAPP_OUTBOUND_PATH = "/message/v1/client/message/send"
+# WHATSAPP_OUTBOUND_API_BASE = "https://YOUR-BSP-API-HOST"
+WHATSAPP_OUTBOUND_BODY_TEMPLATE = "{\"to\":\"{to}\",\"type\":\"text\",\"text\":{\"body\":\"{text_escaped}\"}}"

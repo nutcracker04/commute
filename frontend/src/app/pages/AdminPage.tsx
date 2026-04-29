@@ -5,7 +5,6 @@ import { QrInventoryCard } from '../components/QrInventoryCard';
 import {
   createQrs,
   listQrs,
-  isAdminApiConfigured,
   createDriver,
   listDrivers,
   listAvailableRefIds,
@@ -80,7 +79,6 @@ function MobileDriverAssetRow({
 }
 
 export function AdminPage() {
-  const configured = isAdminApiConfigured();
 
   const [tab, setTab] = useState('generate');
 
@@ -116,7 +114,6 @@ export function AdminPage() {
   const [dlcRunBusy, setDlcRunBusy] = useState(false);
 
   const loadLibrary = useCallback(async () => {
-    if (!configured) return;
     setLibraryLoading(true);
     setLibraryError(null);
     try {
@@ -132,16 +129,15 @@ export function AdminPage() {
     } finally {
       setLibraryLoading(false);
     }
-  }, [configured, libraryOffset]);
+  }, [libraryOffset]);
 
   useEffect(() => {
-    if (tab === 'library' && configured) {
+    if (tab === 'library') {
       void loadLibrary();
     }
-  }, [tab, configured, loadLibrary]);
+  }, [tab, loadLibrary]);
 
   const loadDrivers = useCallback(async () => {
-    if (!configured) return;
     setDriversLoading(true);
     setDriversError(null);
     try {
@@ -153,10 +149,9 @@ export function AdminPage() {
     } finally {
       setDriversLoading(false);
     }
-  }, [configured]);
+  }, []);
 
   const loadAvailableRefIds = useCallback(async () => {
-    if (!configured) return;
     setRefIdsLoading(true);
     try {
       const page = 2000;
@@ -174,10 +169,9 @@ export function AdminPage() {
     } finally {
       setRefIdsLoading(false);
     }
-  }, [configured]);
+  }, []);
 
   const loadCommission = useCallback(async () => {
-    if (!configured) return;
     setCommissionLoading(true);
     setCommissionError(null);
     try {
@@ -198,23 +192,22 @@ export function AdminPage() {
     } finally {
       setCommissionLoading(false);
     }
-  }, [configured, dlcWeekId]);
+  }, [dlcWeekId]);
 
   useEffect(() => {
-    if (tab === 'drivers' && configured) {
+    if (tab === 'drivers') {
       void loadDrivers();
       void loadAvailableRefIds();
     }
-  }, [tab, configured, loadDrivers, loadAvailableRefIds]);
+  }, [tab, loadDrivers, loadAvailableRefIds]);
 
   useEffect(() => {
-    if (tab === 'commission' && configured) {
+    if (tab === 'commission') {
       void loadCommission();
     }
-  }, [tab, configured, loadCommission]);
+  }, [tab, loadCommission]);
 
   const handleGenerate = async () => {
-    if (!configured) return;
     const qty = parseInt(quantity, 10);
     if (isNaN(qty) || qty < 1 || qty > MAX_BATCH) {
       setGenerateError(`Enter a quantity between 1 and ${MAX_BATCH}`);
@@ -242,7 +235,6 @@ export function AdminPage() {
   const canNext = libraryOffset + PAGE_SIZE < libraryTotal;
 
   const handleCreateDriver = async () => {
-    if (!configured) return;
     const name = dName.trim();
     const phone = dPhone.trim();
     const refNum = parseInt(dQrRefId.trim(), 10);
@@ -285,7 +277,6 @@ export function AdminPage() {
   };
 
   const handleRunDlc = async () => {
-    if (!configured) return;
     setDlcRunBusy(true);
     setDlcRunMsg(null);
     try {
@@ -302,12 +293,6 @@ export function AdminPage() {
   return (
     <div className="h-full min-h-0 overflow-auto bg-gray-50">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 pb-10">
-        {!configured && (
-          <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-            Admin API not configured. Set <code>VITE_ADMIN_API_SECRET</code> in your <code>.env</code> file.
-          </div>
-        )}
-
         <Tabs value={tab} onValueChange={setTab} className="w-full gap-4">
           <TabsList className="flex h-auto min-h-11 w-full max-w-full flex-nowrap gap-1 overflow-x-auto overflow-y-hidden rounded-xl bg-gray-100 p-1 [-webkit-overflow-scrolling:touch] sm:grid sm:h-auto sm:w-full sm:grid-cols-4 sm:overflow-visible">
             <TabsTrigger
@@ -360,7 +345,6 @@ export function AdminPage() {
                   max={MAX_BATCH}
                   value={quantity}
                   onChange={(e) => setQuantity(e.target.value)}
-                  disabled={!configured}
                   className={fieldInputClass}
                 />
                 <p className="mt-0.5 text-[11px] text-gray-500">Up to {MAX_BATCH} per request</p>
@@ -376,7 +360,7 @@ export function AdminPage() {
                 <button
                   type="button"
                   onClick={() => void handleGenerate()}
-                  disabled={!configured || isGenerating}
+                  disabled={isGenerating}
                   className="inline-flex min-h-11 h-auto w-full items-center justify-center gap-2 rounded-md bg-purple-600 px-6 py-2.5 text-sm font-medium text-white transition-colors hover:bg-purple-700 disabled:cursor-not-allowed disabled:opacity-50 sm:h-10 sm:w-auto sm:py-0"
                 >
                   <Plus className="h-4 w-4" />
@@ -415,7 +399,7 @@ export function AdminPage() {
               <button
                 type="button"
                 onClick={() => void loadLibrary()}
-                disabled={!configured || libraryLoading}
+                disabled={libraryLoading}
                 className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 self-start rounded-md border border-gray-300 bg-white px-3 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 disabled:opacity-50 sm:self-auto"
               >
                 <RefreshCw className={`h-4 w-4 ${libraryLoading ? 'animate-spin' : ''}`} />
@@ -480,14 +464,12 @@ export function AdminPage() {
                   placeholder="Name *"
                   value={dName}
                   onChange={(e) => setDName(e.target.value)}
-                  disabled={!configured}
                   className={fieldInputClass}
                 />
                 <input
                   placeholder="Phone *"
                   value={dPhone}
                   onChange={(e) => setDPhone(e.target.value)}
-                  disabled={!configured}
                   className={fieldInputClass}
                 />
                 <div className="flex min-w-0 flex-col gap-1 sm:col-span-2">
@@ -498,7 +480,7 @@ export function AdminPage() {
                     id="driver-ref-id-select"
                     value={dQrRefId}
                     onChange={(e) => setDQrRefId(e.target.value)}
-                    disabled={!configured || refIdsLoading}
+                    disabled={refIdsLoading}
                     className={fieldInputClass}
                   >
                     <option value="">
@@ -523,7 +505,6 @@ export function AdminPage() {
                     ref={upiQrFileRef}
                     type="file"
                     accept="image/png,image/jpeg,image/webp"
-                    disabled={!configured}
                     className="min-w-0 text-base sm:text-sm file:mr-2 file:rounded file:border-0 file:bg-purple-50 file:px-2 file:py-2 file:text-xs sm:file:py-1"
                   />
                 </label>
@@ -533,7 +514,6 @@ export function AdminPage() {
                     ref={identityFileRef}
                     type="file"
                     accept="image/png,image/jpeg,image/webp,application/pdf"
-                    disabled={!configured}
                     className="min-w-0 text-base sm:text-sm file:mr-2 file:rounded file:border-0 file:bg-purple-50 file:px-2 file:py-2 file:text-xs sm:file:py-1"
                   />
                 </label>
@@ -542,7 +522,7 @@ export function AdminPage() {
                 <button
                   type="button"
                   onClick={() => void handleCreateDriver()}
-                  disabled={!configured || driverCreateBusy}
+                  disabled={driverCreateBusy}
                   className="inline-flex min-h-11 w-full items-center justify-center rounded-md bg-purple-600 px-4 text-sm font-medium text-white hover:bg-purple-700 disabled:opacity-50 sm:w-auto"
                 >
                   {driverCreateBusy ? 'Saving…' : 'Add driver'}
@@ -550,7 +530,7 @@ export function AdminPage() {
                 <button
                   type="button"
                   onClick={() => void loadDrivers()}
-                  disabled={!configured || driversLoading}
+                  disabled={driversLoading}
                   className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-gray-300 px-3 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50 sm:w-auto"
                 >
                   <RefreshCw className={`h-4 w-4 ${driversLoading ? 'animate-spin' : ''}`} />
@@ -703,7 +683,7 @@ export function AdminPage() {
                 <button
                   type="button"
                   onClick={() => void loadCommission()}
-                  disabled={!configured || commissionLoading}
+                  disabled={commissionLoading}
                   className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-gray-300 px-3 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50 sm:w-auto"
                 >
                   <RefreshCw className={`h-4 w-4 ${commissionLoading ? 'animate-spin' : ''}`} />
@@ -712,7 +692,7 @@ export function AdminPage() {
                 <button
                   type="button"
                   onClick={() => void handleRunDlc()}
-                  disabled={!configured || dlcRunBusy}
+                  disabled={dlcRunBusy}
                   className="inline-flex min-h-11 w-full items-center justify-center rounded-md bg-purple-600 px-4 text-sm font-medium text-white hover:bg-purple-700 disabled:opacity-50 sm:w-auto"
                 >
                   {dlcRunBusy ? 'Running…' : 'Run weekly aggregation'}

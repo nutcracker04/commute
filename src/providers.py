@@ -12,7 +12,6 @@ Unset WHATSAPP_PROVIDER (or "generic") uses the legacy payload.py heuristic for
 backward compatibility.
 
 Interface (unchanged from previous iteration, no entry.py changes needed):
-  verify_inbound(request, raw_body, env) -> bool
   handle_get(request, env) -> (body_str, status) | None
   parse_inbound(body_text, content_type) -> list[job_dict]
   build_outbound(env, *, to_phone, text) -> (url, headers, body) | None
@@ -20,9 +19,7 @@ Interface (unchanged from previous iteration, no entry.py changes needed):
 
 from __future__ import annotations
 
-import base64
 import hashlib
-import hmac
 import json
 from typing import Any
 from urllib.parse import parse_qs, parse_qsl, quote, urlencode, urlparse
@@ -99,9 +96,6 @@ def _env_with_preset(env: Any, name: str, preset: dict[str, str], default: str =
 class WhatsAppProvider:
     name: str = "base"
 
-    def verify_inbound(self, request: Any, raw_body: str, env: Any) -> bool:
-        return True
-
     def handle_get(self, request: Any, env: Any) -> tuple[str, int] | None:
         return None
 
@@ -122,19 +116,10 @@ class GenericFlatProvider(WhatsAppProvider):
     """Legacy fallback: delegates to payload.py heuristics and whatsapp_outbound.py.
 
     Active when WHATSAPP_PROVIDER is unset or "generic" and no WA_INBOUND_* vars
-    are configured. All existing WHATSAPP_OUTBOUND_* / WHATSAPP_WEBHOOK_SECRET
-    env vars work exactly as before.
+    are configured.
     """
 
     name = "generic"
-
-    def verify_inbound(self, request: Any, raw_body: str, env: Any) -> bool:
-        secret = _str_env(env, "WHATSAPP_WEBHOOK_SECRET", "")
-        if not secret:
-            return True
-        hdr_name = _str_env(env, "WHATSAPP_WEBHOOK_SECRET_HEADER", "X-Webhook-Secret")
-        headers = getattr(request, "headers", request)
-        return _header_get(headers, hdr_name) == secret
 
     def parse_inbound(self, body_text: str, content_type: str) -> list[dict[str, Any]]:
         try:
@@ -247,7 +232,7 @@ _PRESETS: dict[str, dict[str, str]] = {
 class UniversalProvider(WhatsAppProvider):
     """Env-driven universal BSP adapter.
 
-    Reads WA_INBOUND_*, WA_OUTBOUND_*, WA_VERIFY_* vars (with preset defaults)
+    Reads WA_INBOUND_* and WA_OUTBOUND_* vars (with preset defaults)
     to handle any WhatsApp BSP without writing Python code.
     """
 
@@ -259,54 +244,7 @@ class UniversalProvider(WhatsAppProvider):
     def _cfg(self, env: Any, name: str, default: str = "") -> str:
         return _env_with_preset(env, name, self._preset, default)
 
-    # --- Verification engine ---
-
-    def verify_inbound(self, request: Any, raw_body: str, env: Any) -> bool:
-        mode = self._cfg(env, "WA_VERIFY_MODE", "none").lower()
-        if mode == "none":
-            return True
-
-        headers = getattr(request, "headers", request)
-
-        if mode == "header":
-            hdr_name = self._cfg(env, "WA_VERIFY_HEADER", "X-Webhook-Secret")
-            secret_var = self._cfg(env, "WA_VERIFY_SECRET_VAR", "WHATSAPP_WEBHOOK_SECRET")
-            secret = _str_env(env, secret_var, "").strip()
-            if not secret:
-                return True
-            return _header_get(headers, hdr_name) == secret
-
-        if mode == "hmac-sha256":
-            hdr_name = self._cfg(env, "WA_VERIFY_HEADER", "X-Hub-Signature-256")
-            secret_var = self._cfg(env, "WA_VERIFY_SECRET_VAR", "WHATSAPP_APP_SECRET")
-            secret = _str_env(env, secret_var, "").strip()
-            if not secret:
-                return True
-            sig = _header_get(headers, hdr_name) or ""
-            if not sig.startswith("sha256="):
-                return False
-            mac = hmac.new(secret.encode("utf-8"), raw_body.encode("utf-8"), hashlib.sha256)
-            return hmac.compare_digest(mac.hexdigest(), sig[len("sha256="):])
-
-        if mode == "hmac-sha1-twilio":
-            hdr_name = self._cfg(env, "WA_VERIFY_HEADER", "X-Twilio-Signature")
-            secret_var = self._cfg(env, "WA_VERIFY_SECRET_VAR", "WHATSAPP_AUTH_TOKEN")
-            secret = _str_env(env, secret_var, "").strip()
-            if not secret:
-                return True
-            sig = _header_get(headers, hdr_name) or ""
-            if not sig:
-                return False
-            url = str(getattr(request, "url", "") or "")
-            params = dict(parse_qsl(raw_body, keep_blank_values=True))
-            sorted_suffix = "".join(k + params[k] for k in sorted(params))
-            mac = hmac.new(secret.encode("utf-8"), (url + sorted_suffix).encode("utf-8"), hashlib.sha1)
-            expected = base64.b64encode(mac.digest()).decode("ascii")
-            return hmac.compare_digest(expected, sig)
-
-        return True
-
-    # --- GET challenge engine ---
+    # --- GET challenge engine (Meta hub.challenge echo; no verify_token check) ---
 
     def handle_get(self, request: Any, env: Any) -> tuple[str, int] | None:
         mode = self._cfg(env, "WA_GET_CHALLENGE", "none").lower()
@@ -318,11 +256,9 @@ class UniversalProvider(WhatsAppProvider):
             return None
         if (qs.get("hub.mode") or [""])[0] != "subscribe":
             return None
-        token = (qs.get("hub.verify_token") or [""])[0]
         challenge = (qs.get("hub.challenge") or [""])[0]
-        verify_token = _str_env(env, "WHATSAPP_WEBHOOK_SECRET", "").strip()
-        if not verify_token or token != verify_token:
-            return ("Forbidden", 403)
+        if not challenge:
+            return None
         return (challenge, 200)
 
     # --- Inbound parse engine ---

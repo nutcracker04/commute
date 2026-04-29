@@ -37,8 +37,8 @@ def integration_document(*, public_base: str) -> dict[str, object]:
             "method": "POST",
             "content_type": "provider-dependent (JSON for most; form-encoded for twilio/gupshup)",
             "notes": (
-                "Inbound WhatsApp webhooks. GET returns 'ok' for plain URL probes; "
-                "when WHATSAPP_PROVIDER=meta or 360dialog the GET echoes hub.challenge for subscription verification."
+                "Inbound WhatsApp webhooks: POST is not authenticated. "
+                "GET returns 'ok' or echoes hub.challenge when WHATSAPP_PROVIDER uses Meta-style GET handling."
             ),
         },
         "provider": {
@@ -107,14 +107,9 @@ def integration_document(*, public_base: str) -> dict[str, object]:
             ),
         },
         "secrets": {
-            "common": "WHATSAPP_OUTBOUND_AUTH_SECRET (required for all providers)",
-            "verify_secrets_by_mode": {
-                "hmac-sha256": "WHATSAPP_APP_SECRET (Meta)",
-                "hmac-sha1-twilio": "WHATSAPP_AUTH_TOKEN (Twilio)",
-                "header": "Value in WA_VERIFY_SECRET_VAR env (default WHATSAPP_WEBHOOK_SECRET)",
-            },
+            "common": "WHATSAPP_OUTBOUND_AUTH_SECRET (outbound sends to BSP / Graph API)",
             "coupon_vars": "COUPON_CODE_PREFIX, COUPON_RANDOM_LENGTH, COUPON_WHATSAPP_TEMPLATE ({code}, {code_spaced}); legacy PROMO_CODE_PREFIX / BRAND_COUPON_PREFIX for prefix only",
-            "admin_inventory_api": "ADMIN_API_SECRET (required for admin JSON APIs; 503 if unset). Local dev: .dev.vars",
+            "admin_inventory_api": "Admin JSON APIs require no authentication.",
             "r2_driver_assets": "DRIVER_ASSETS R2 binding; set R2_PUBLIC_BASE when using a public bucket hostname.",
             "public_base": "PUBLIC_BASE_URL in wrangler [vars] for correct /integration links",
         },
@@ -153,7 +148,7 @@ def integration_document(*, public_base: str) -> dict[str, object]:
             "weeks_list": {"method": "GET", "path": "/api/weeks"},
             "dlc_list": {"method": "GET", "path": "/api/dlc"},
             "run_dlc_cron": {"method": "POST", "path": "/api/admin/run-dlc"},
-            "auth_header": "ADMIN_API_SECRET_HEADER (default X-Admin-Key) or Authorization: Bearer …",
+            "auth_header": "None (admin APIs are open).",
         },
         "setup_doc": "docs/flow-alignment.md",
     }

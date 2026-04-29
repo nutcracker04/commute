@@ -218,43 +218,10 @@ def _multipart_file_field(
     return None, ""
 
 
-def _admin_request_token(request: Any, env: Any) -> str | None:
-    hdr_name = _str_env(env, "ADMIN_API_SECRET_HEADER", "X-Admin-Key").strip() or "X-Admin-Key"
-    raw = _header_get(request.headers, hdr_name)
-    if raw is None:
-        return None
-    s = str(raw).strip()
-    if hdr_name.lower() == "authorization" and s.lower().startswith("bearer "):
-        s = s[7:].strip()
-    return s or None
-
-
-def _admin_api_check(request: Any, env: Any) -> Response | None:
-    """
-    Returns a Response to send if the request is not allowed; None if OK.
-    Rejects when ADMIN_API_SECRET is unset (no accidental open admin API).
-    """
-    secret = _str_env(env, "ADMIN_API_SECRET", "")
-    if not secret:
-        return Response(
-            json.dumps({"error": "admin API not configured (set ADMIN_API_SECRET)"}),
-            status=503,
-            headers={"content-type": "application/json"},
-        )
-    got = _admin_request_token(request, env)
-    if got != secret:
-        return Response(
-            json.dumps({"error": "unauthorized"}),
-            status=401,
-            headers={"content-type": "application/json"},
-        )
-    return None
-
-
 _CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, X-Admin-Key, Authorization",
+    "Access-Control-Allow-Headers": "Content-Type",
     "Access-Control-Max-Age": "86400",
 }
 
@@ -542,10 +509,6 @@ class Default(WorkerEntrypoint):
         return Response("", status=302, headers={"Location": wa_url})
 
     async def _handle_api_qrs_create(self, request, url: str) -> Response:
-        bad = _admin_api_check(request, self.env)
-        if bad is not None:
-            return bad
-
         body_text = await request.text()
         try:
             payload = json.loads(body_text) if body_text.strip() else {}
@@ -606,10 +569,6 @@ class Default(WorkerEntrypoint):
         return _json_response({"created": len(items), "items": items}, status=201)
 
     async def _handle_api_qrs_list(self, request, url: str) -> Response:
-        bad = _admin_api_check(request, self.env)
-        if bad is not None:
-            return bad
-
         parsed = urlparse(url)
         q = parse_qs(parsed.query or "")
 
@@ -672,10 +631,6 @@ class Default(WorkerEntrypoint):
         )
 
     async def _handle_api_qrs_available_refs(self, request, url: str) -> Response:
-        bad = _admin_api_check(request, self.env)
-        if bad is not None:
-            return bad
-
         parsed = urlparse(url)
         q = parse_qs(parsed.query or "")
 
@@ -727,10 +682,6 @@ class Default(WorkerEntrypoint):
         )
 
     async def _handle_api_leads_list(self, request, url: str) -> Response:
-        bad = _admin_api_check(request, self.env)
-        if bad is not None:
-            return bad
-
         parsed = urlparse(url)
         q = parse_qs(parsed.query or "")
 
@@ -936,10 +887,6 @@ class Default(WorkerEntrypoint):
         return s if s else f"D{int(driver_id)}"
 
     async def _handle_api_drivers_list(self, request, url: str) -> Response:
-        bad = _admin_api_check(request, self.env)
-        if bad is not None:
-            return bad
-
         parsed = urlparse(url)
         q = parse_qs(parsed.query or "")
 
@@ -1011,10 +958,6 @@ class Default(WorkerEntrypoint):
         )
 
     async def _handle_api_drivers_create(self, request) -> Response:
-        bad = _admin_api_check(request, self.env)
-        if bad is not None:
-            return bad
-
         ct_hdr = (_header_get(request.headers, "Content-Type") or "").lower()
         if "multipart/form-data" not in ct_hdr:
             return _json_response(
@@ -1356,10 +1299,6 @@ class Default(WorkerEntrypoint):
     async def _handle_api_drivers_subpath(
         self, request, method: str, path: str
     ) -> Response:
-        bad = _admin_api_check(request, self.env)
-        if bad is not None:
-            return bad
-
         rest = path.removeprefix("/api/drivers/").strip("/")
         if not rest:
             return Response("Not found", status=404)
@@ -1392,10 +1331,6 @@ class Default(WorkerEntrypoint):
         return Response("Not found", status=404)
 
     async def _handle_api_weeks_list(self, request, url: str) -> Response:
-        bad = _admin_api_check(request, self.env)
-        if bad is not None:
-            return bad
-
         parsed = urlparse(url)
         q = parse_qs(parsed.query or "")
 
@@ -1446,10 +1381,6 @@ class Default(WorkerEntrypoint):
         )
 
     async def _handle_api_dlc_list(self, request, url: str) -> Response:
-        bad = _admin_api_check(request, self.env)
-        if bad is not None:
-            return bad
-
         parsed = urlparse(url)
         q = parse_qs(parsed.query or "")
 
@@ -1523,10 +1454,6 @@ class Default(WorkerEntrypoint):
         )
 
     async def _handle_api_admin_run_dlc(self, request) -> Response:
-        bad = _admin_api_check(request, self.env)
-        if bad is not None:
-            return bad
-
         now_ts = int(time.time())
         result = await run_weekly_dlc_for_previous_week(
             self.env.DB,
@@ -1550,11 +1477,7 @@ class Default(WorkerEntrypoint):
         )
 
     async def _handle_webhook_get(self, request) -> Response:
-        """Inbound provider may probe the callback URL.
-
-        Delegates to the provider adapter first (e.g. Meta hub.challenge echo);
-        falls through to a plain-200 'ok' if the provider has nothing to return.
-        """
+        """URL probe or Meta-style hub.challenge echo (no verify_token check)."""
         provider = get_provider(self.env)
         result = provider.handle_get(request, self.env)
         if result is not None:
@@ -1567,9 +1490,6 @@ class Default(WorkerEntrypoint):
         content_type = _header_get(request.headers, "Content-Type") or ""
 
         provider = get_provider(self.env)
-        if not provider.verify_inbound(request, body_text, self.env):
-            return Response("Invalid webhook secret", status=401)
-
         messages = provider.parse_inbound(body_text, content_type)
         received_at = int(time.time())
 

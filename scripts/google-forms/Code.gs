@@ -2,7 +2,7 @@
  * Commute — Google Form → POST /api/drivers (multipart)
  *
  * Paste into the Form-bound Apps Script project (Extensions → Apps Script).
- * Set Script properties: WORKER_BASE, ADMIN_API_KEY (see README.md).
+ * Set Script property: WORKER_BASE (worker origin, no trailing slash).
  */
 
 var CONFIG = {
@@ -27,11 +27,9 @@ function onFormSubmit(e) {
 
   var props = PropertiesService.getScriptProperties();
   var base = (props.getProperty('WORKER_BASE') || '').replace(/\/$/, '');
-  var apiKey = props.getProperty('ADMIN_API_KEY') || '';
-  var adminHeader = props.getProperty('ADMIN_HEADER') || 'X-Admin-Key';
 
-  if (!base || !apiKey) {
-    Logger.log('Commute: set WORKER_BASE and ADMIN_API_KEY in Project Settings → Script properties');
+  if (!base) {
+    Logger.log('Commute: set WORKER_BASE in Project Settings → Script properties');
     return;
   }
 
@@ -83,14 +81,10 @@ function onFormSubmit(e) {
     var bodyBytes = buildMultipartDriverCreate_(boundary, name, phone, refId, upiBlob, idBlob);
 
     var url = base + '/api/drivers';
-    var headers = {};
-    headers[adminHeader] = apiKey;
-
     var resp = UrlFetchApp.fetch(url, {
       method: 'post',
       contentType: 'multipart/form-data; boundary=' + boundary,
       payload: bodyBytes,
-      headers: headers,
       muteHttpExceptions: true,
     });
 
