@@ -2,8 +2,7 @@
 
 Instead of one Python class per BSP, this module uses a single UniversalProvider
 class that reads dot-path field mappings and body templates from env vars. Any BSP
-— Meta, Twilio, Gupshup, WATI, MSG91, Interakt, Kaleyra, AiSensy, or any future
-provider — works by setting WA_INBOUND_* / WA_OUTBOUND_* / WA_VERIFY_* vars.
+— Meta, Twilio, Gupshup, WATI, or any other BSP — works by setting WA_INBOUND_* / WA_OUTBOUND_* vars.
 
 Named presets (WHATSAPP_PROVIDER = meta|twilio|gupshup|wati|360dialog) supply
 sensible defaults so operators don't have to look up field paths themselves.

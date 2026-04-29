@@ -45,8 +45,8 @@ def integration_document(*, public_base: str) -> dict[str, object]:
             "selector_var": "WHATSAPP_PROVIDER",
             "selector_values": ["generic (default)", "meta", "360dialog", "twilio", "gupshup", "wati", "custom"],
             "architecture": (
-                "Env-driven universal adapter. A single UniversalProvider class reads WA_INBOUND_*, "
-                "WA_OUTBOUND_*, WA_VERIFY_* vars to handle any BSP. Named presets (meta, twilio, etc.) "
+                "Env-driven universal adapter. A single UniversalProvider class reads WA_INBOUND_* and "
+                "WA_OUTBOUND_* vars to handle any BSP. Named presets (meta, twilio, etc.) "
                 "supply default mappings. Set WHATSAPP_PROVIDER=custom and configure WA_* vars manually "
                 "for any BSP not in the preset list — zero Python code required."
             ),
@@ -69,18 +69,19 @@ def integration_document(*, public_base: str) -> dict[str, object]:
                 "WA_OUTBOUND_CONTENT_TYPE": "'application/json' (default) or 'application/x-www-form-urlencoded'",
             },
             "verify_vars": {
-                "WA_VERIFY_MODE": "'none' (default), 'header' (shared secret), 'hmac-sha256' (Meta), 'hmac-sha1-twilio' (Twilio)",
-                "WA_VERIFY_HEADER": "Header name containing signature/secret",
-                "WA_VERIFY_SECRET_VAR": "Env var holding the HMAC key (default depends on mode)",
+                "note": "Inbound POST verification is not implemented in the worker (WA_VERIFY_* ignored at runtime).",
             },
             "challenge_vars": {
                 "WA_GET_CHALLENGE": "'none' (default) or 'meta' (echo hub.challenge)",
             },
             "common_outbound_vars": {
-                "WHATSAPP_OUTBOUND_URL": "BSP API endpoint URL",
-                "WHATSAPP_OUTBOUND_AUTH_HEADER": "Header name for authentication",
-                "WHATSAPP_OUTBOUND_AUTH_SECRET": "Auth value (secret — never in wrangler.toml)",
-                "WHATSAPP_BUSINESS_PHONE": "Your sender number (E.164, no leading +)",
+                "WHATSAPP_OUTBOUND_URL": "Full BSP send URL (optional if using base+path below)",
+                "WHATSAPP_OUTBOUND_API_BASE": "Origin only, e.g. https://api.sews.ai — combined with WHATSAPP_OUTBOUND_PATH",
+                "WHATSAPP_OUTBOUND_PATH": "Path appended to API base (default /message/v1/client/message/send)",
+                "WHATSAPP_OUTBOUND_BODY_TEMPLATE": "JSON template with {to}, {text_escaped} (generic provider)",
+                "WHATSAPP_OUTBOUND_AUTH_HEADER": "Header name for the API key or Bearer token",
+                "WHATSAPP_OUTBOUND_AUTH_SECRET": "Auth value (wrangler secret — never in wrangler.toml)",
+                "WHATSAPP_BUSINESS_PHONE": "Sender number if your BSP requires it in the body (E.164, no +)",
             },
             "presets": {
                 "meta": "Meta Cloud API — HMAC-SHA256 verify, meta envelope unwrap, nested JSON outbound",
@@ -90,7 +91,7 @@ def integration_document(*, public_base: str) -> dict[str, object]:
                 "wati": "WATI — no verify, flat JSON inbound, URL-path outbound",
             },
             "custom_bsp_example": {
-                "description": "For any BSP (MSG91, Interakt, Kaleyra, AiSensy, etc.): read their webhook docs, set WA_INBOUND_* paths. Read their send API docs, set WA_OUTBOUND_BODY_TEMPLATE.",
+                "description": "For any BSP: read webhook docs → WA_INBOUND_* paths; read send API → WA_OUTBOUND_BODY_TEMPLATE and WHATSAPP_OUTBOUND_* URL/auth.",
                 "steps": [
                     "1. Set WHATSAPP_PROVIDER=custom",
                     "2. Set WA_INBOUND_FROM_PATH, WA_INBOUND_TEXT_PATH (required minimum)",
