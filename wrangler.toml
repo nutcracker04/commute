@@ -68,9 +68,6 @@ COUPON_WHATSAPP_TEMPLATE = "Here's your coupon — use it at checkout:\n\n*{code
 
 R2_PUBLIC_BASE = "https://pub-d64bbf1d4002461d905fdb95ed882f17.r2.dev"
 
-# Outbound WhatsApp send (generic provider + WHATSAPP_OUTBOUND_BODY_TEMPLATE):
-#   Option A — full URL: WHATSAPP_OUTBOUND_URL = "https://HOST/message/v1/client/message/send"
-#   Option B — base only: WHATSAPP_OUTBOUND_API_BASE = "https://HOST" (path below is appended)
+WHATSAPP_OUTBOUND_API_BASE = "https://api.sews.ai"
 WHATSAPP_OUTBOUND_PATH = "/message/v1/client/message/send"
-# WHATSAPP_OUTBOUND_API_BASE = "https://YOUR-BSP-API-HOST"
 WHATSAPP_OUTBOUND_BODY_TEMPLATE = "{\"to\":\"{to}\",\"type\":\"text\",\"text\":{\"body\":\"{text_escaped}\"}}"
