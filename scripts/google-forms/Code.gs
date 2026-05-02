@@ -1,8 +1,16 @@
 /**
  * Commute — Google Form → POST /api/drivers (multipart)
  *
- * Paste into the Form-bound Apps Script project (Extensions → Apps Script).
- * Set Script property: WORKER_BASE (worker origin, no trailing slash).
+ * Script property: WORKER_BASE (worker origin, no trailing slash).
+ *
+ * Installable trigger “On form submit” exists in two flavors — pick ONE:
+ *   • Event source: From spreadsheet → use the script project bound to the response Sheet.
+ *   • Event source: From form → use the script project bound to the Form.
+ * The event payload differs: spreadsheet gives e.namedValues; form gives e.response (no namedValues).
+ * This file handles both. Re-authorize the script after changing triggers if Google prompts you.
+ *
+ * A new row added manually / imported does NOT fire form submit — only real Form submissions do.
+ * Testing: submit via the Form preview link. Editor ▶ Run passes no payload.
  */
 
 var CONFIG = {
@@ -15,12 +23,28 @@ var CONFIG = {
 };
 
 /**
- * Installable trigger: Form → On form submit → this function.
+ * Installable “On form submit” only — see file header. Editor ▶ Run has no payload.
  */
 function onFormSubmit(e) {
-  if (!e || !e.namedValues) {
+  if (!e) {
     Logger.log(
-      'Commute: onFormSubmit needs a real form-submit event. Add an installable trigger: Form → On form submit → onFormSubmit (do not Run from the editor with no argument).'
+      'Commute: missing event (did you click Run in the editor?). Submit the Form to test.'
+    );
+    return;
+  }
+
+  var nv = e.namedValues;
+  if (!nv && e.response) {
+    nv = namedValuesFromFormResponse_(e.response);
+    if (nv && Object.keys(nv).length) {
+      Logger.log('Commute: using Form-bound trigger (built namedValues from e.response).');
+    }
+  }
+  if (!nv || !Object.keys(nv).length) {
+    Logger.log(
+      'Commute: no answers found. Use installable trigger On form submit (From spreadsheet OR From form), ' +
+        'then submit the Form — not only add a sheet row. Raw keys on e: ' +
+        JSON.stringify(Object.keys(e).sort())
     );
     return;
   }
@@ -34,7 +58,6 @@ function onFormSubmit(e) {
   }
 
   try {
-    var nv = e.namedValues;
     var name = firstAnswer_(nv, CONFIG.FIELD_NAME);
     var phone = firstAnswer_(nv, CONFIG.FIELD_PHONE);
     var refId = firstAnswer_(nv, CONFIG.FIELD_REF_ID);
@@ -79,12 +102,14 @@ function onFormSubmit(e) {
 
     var boundary = '----CommuteBoundary' + Utilities.getUuid().replace(/-/g, '');
     var bodyBytes = buildMultipartDriverCreate_(boundary, name, phone, refId, upiBlob, idBlob);
+    // UrlFetchApp only treats string/Blob as raw body; a plain array is coerced wrongly and breaks multipart.
+    var payloadBlob = Utilities.newBlob(bodyBytes);
 
     var url = base + '/api/drivers';
     var resp = UrlFetchApp.fetch(url, {
       method: 'post',
       contentType: 'multipart/form-data; boundary=' + boundary,
-      payload: bodyBytes,
+      payload: payloadBlob,
       muteHttpExceptions: true,
     });
 
@@ -92,15 +117,66 @@ function onFormSubmit(e) {
     var text = resp.getContentText();
     if (code < 200 || code >= 300) {
       logError_(e, code, text, name, phone, refId);
+    } else {
+      Logger.log('Commute: driver created OK (HTTP ' + code + ') ' + text);
     }
   } catch (err) {
     var msg = String(err.message || err);
-    if (e && e.source) {
+    if (getResponseSpreadsheetId_(e)) {
       logError_(e, 0, msg, '', '', '');
     } else {
-      Logger.log('Commute onFormSubmit error (no form context for sheet log): ' + msg);
+      Logger.log('Commute onFormSubmit error (no spreadsheet context for sheet log): ' + msg);
     }
   }
+}
+
+/**
+ * Form-bound “On form submit” trigger populates e.response, not e.namedValues.
+ * Builds the same shape as spreadsheet-bound triggers: { "Question title": ["answer"] }.
+ */
+function namedValuesFromFormResponse_(response) {
+  var nv = {};
+  if (!response || !response.getItemResponses) return nv;
+  var items = response.getItemResponses();
+  var i;
+  for (i = 0; i < items.length; i++) {
+    var ir = items[i];
+    try {
+      var item = ir.getItem();
+      var title = item.getTitle && item.getTitle();
+      if (!title) continue;
+      var ans = ir.getResponse();
+      if (ans === null || ans === undefined || ans === '') continue;
+      if (Object.prototype.toString.call(ans) === '[object Array]') {
+        nv[title] = ans;
+      } else {
+        nv[title] = [String(ans)];
+      }
+    } catch (rowErr) {
+      /* skip bad item */
+    }
+  }
+  return nv;
+}
+
+/** Spreadsheet-bound submit: e.source is Spreadsheet. Form-bound: e.source is Form with getDestinationId. */
+function getResponseSpreadsheetId_(e) {
+  if (!e || !e.source) return '';
+  try {
+    var s = e.source;
+    if (s.getDestinationId) {
+      var d = s.getDestinationId();
+      if (d) return String(d);
+    }
+  } catch (x) {
+    /* ignore */
+  }
+  try {
+    if (e.source.getId) return String(e.source.getId());
+  } catch (x2) {
+    /* ignore */
+  }
+  return '';
 }
 
 function firstAnswer_(namedValues, title) {
@@ -115,7 +191,8 @@ function firstAnswer_(namedValues, title) {
 function extractDriveFileId_(text) {
   if (!text) return '';
   var s = String(text).trim();
-  var m = s.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+  // /file/d/ID or /file/u/<account>/d/ID (multi-login Drive URLs)
+  var m = s.match(/\/file\/(?:u\/\d+\/)?d\/([a-zA-Z0-9_-]+)/);
   if (m) return m[1];
   m = s.match(/[?&]id=([a-zA-Z0-9_-]+)/);
   if (m) return m[1];
@@ -211,9 +288,10 @@ function logError_(e, httpCode, responseBody, name, phone, refId) {
   if (snippet.length > 2000) snippet = snippet.substring(0, 2000);
 
   try {
-    if (!e || !e.source) {
+    var destId = getResponseSpreadsheetId_(e);
+    if (!destId) {
       Logger.log(
-        'Commute error (no form event): HTTP ' +
+        'Commute error (no spreadsheet id): HTTP ' +
           httpCode +
           ' ' +
           snippet +
@@ -223,24 +301,6 @@ function logError_(e, httpCode, responseBody, name, phone, refId) {
           phone +
           ' refId=' +
           refId
-      );
-      return;
-    }
-    var form = e.source;
-    var destId = form.getDestinationId && form.getDestinationId();
-    if (!destId) {
-      Logger.log(
-        'Commute: ' +
-          snippet +
-          ' (HTTP ' +
-          httpCode +
-          '). name="' +
-          name +
-          '" phone="' +
-          phone +
-          '" refId="' +
-          refId +
-          '". No response spreadsheet is linked, so this was not written to a sheet — Form → Responses → Link to Sheets to enable the "Form sync errors" tab.'
       );
       return;
     }
