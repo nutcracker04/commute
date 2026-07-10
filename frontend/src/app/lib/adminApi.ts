@@ -183,6 +183,10 @@ export function deleteDriver(id: number): Promise<{ deleted: boolean; id: number
   return deleteById(`/api/drivers/${id}`);
 }
 
+export function deleteDlc(id: number): Promise<{ deleted: boolean; id: number }> {
+  return deleteById(`/api/dlc/${id}`);
+}
+
 export async function listWeeks(params: {
   limit?: number;
   offset?: number;

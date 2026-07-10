@@ -420,6 +420,11 @@ class Default(WorkerEntrypoint):
                 return await self._handle_api_dlc_list(request, url)
             return Response("Method not allowed", status=405)
 
+        if path.startswith("/api/dlc/"):
+            if method == "DELETE":
+                return await self._handle_api_dlc_delete(path)
+            return Response("Method not allowed", status=405)
+
         if path == "/api/admin/run-dlc":
             if method == "POST":
                 return await self._handle_api_admin_run_dlc(request)
@@ -1312,6 +1317,23 @@ class Default(WorkerEntrypoint):
                 {"error": "lead not found", "deleted": False, "id": lead_id}, status=404
             )
         return _json_response({"deleted": True, "id": lead_id})
+
+    async def _handle_api_dlc_delete(self, path: str) -> Response:
+        # DLC rows are a computed report: a deleted row can reappear when weekly aggregation
+        # re-runs over the same leads. This removes the current entry on demand.
+        rest = path.removeprefix("/api/dlc/").strip("/")
+        try:
+            dlc_id = int(rest.split("/")[0])
+        except (ValueError, IndexError):
+            return _json_response({"error": "invalid DLC id"}, status=400)
+        changes = await _d1_run_changes(
+            self.env.DB, "DELETE FROM driver_lead_counts WHERE id = ?", dlc_id
+        )
+        if changes < 1:
+            return _json_response(
+                {"error": "DLC row not found", "deleted": False, "id": dlc_id}, status=404
+            )
+        return _json_response({"deleted": True, "id": dlc_id})
 
     async def _handle_api_drivers_delete(self, driver_id: int) -> Response:
         # Frees the driver's qr_ref_id back to available refs. R2 assets are left in place

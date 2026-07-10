@@ -11,6 +11,7 @@ import {
   listAvailableRefIds,
   listWeeks,
   listDlc,
+  deleteDlc,
   runDlcAggregation,
   type QrItem,
   type DriverItem,
@@ -114,6 +115,7 @@ export function AdminPage() {
   const [commissionError, setCommissionError] = useState<string | null>(null);
   const [dlcRunMsg, setDlcRunMsg] = useState<string | null>(null);
   const [dlcRunBusy, setDlcRunBusy] = useState(false);
+  const [dlcDeletingId, setDlcDeletingId] = useState<number | null>(null);
 
   const loadLibrary = useCallback(async () => {
     setLibraryLoading(true);
@@ -293,6 +295,25 @@ export function AdminPage() {
       setDriversError(e instanceof Error ? e.message : 'Delete failed');
     } finally {
       setDriverDeletingId(null);
+    }
+  };
+
+  const handleDeleteDlc = async (r: DlcItem) => {
+    if (!window.confirm(
+      `Delete DLC entry #${r.id} (ref ${r.ref_id}, week ${r.week_id}, ${r.lead_count} leads)? ` +
+      `It can reappear when weekly aggregation re-runs.`
+    )) {
+      return;
+    }
+    setDlcDeletingId(r.id);
+    setCommissionError(null);
+    try {
+      await deleteDlc(r.id);
+      await loadCommission();
+    } catch (e) {
+      setCommissionError(e instanceof Error ? e.message : 'Delete failed');
+    } finally {
+      setDlcDeletingId(null);
     }
   };
 
@@ -788,15 +809,27 @@ export function AdminPage() {
                             </p>
                           </div>
                         </div>
-                        <div className="mt-4 border-t border-gray-100 pt-3">
-                          <p className="break-all font-mono text-[11px] leading-relaxed text-gray-500">
-                            <span className="text-gray-400">Entry</span>{' '}
-                            <span className="text-gray-600">{r.id}</span>
-                          </p>
-                          <p className="mt-1.5 text-[11px] leading-relaxed text-gray-500">
-                            <span className="text-gray-400">Updated</span>{' '}
-                            <span className="text-gray-600">{formatDlcComputedAt(r.computed_at)}</span>
-                          </p>
+                        <div className="mt-4 flex items-end justify-between gap-3 border-t border-gray-100 pt-3">
+                          <div className="min-w-0">
+                            <p className="break-all font-mono text-[11px] leading-relaxed text-gray-500">
+                              <span className="text-gray-400">Entry</span>{' '}
+                              <span className="text-gray-600">{r.id}</span>
+                            </p>
+                            <p className="mt-1.5 text-[11px] leading-relaxed text-gray-500">
+                              <span className="text-gray-400">Updated</span>{' '}
+                              <span className="text-gray-600">{formatDlcComputedAt(r.computed_at)}</span>
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void handleDeleteDlc(r)}
+                            disabled={dlcDeletingId === r.id}
+                            aria-label={`Delete DLC entry #${r.id}`}
+                            className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-md border border-red-200 px-2.5 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50"
+                          >
+                            <Trash2 className="size-3.5" />
+                            {dlcDeletingId === r.id ? 'Deleting…' : 'Delete'}
+                          </button>
                         </div>
                       </article>
                     ))}
@@ -810,6 +843,7 @@ export function AdminPage() {
                           <th className="px-3 py-2">Week #</th>
                           <th className="px-3 py-2">Leads</th>
                           <th className="px-3 py-2">Updated</th>
+                          <th className="px-3 py-2 text-right">Actions</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-100">
@@ -820,6 +854,18 @@ export function AdminPage() {
                             <td className="px-3 py-2">{r.week_id}</td>
                             <td className="px-3 py-2">{r.lead_count}</td>
                             <td className="px-3 py-2 text-xs">{formatDlcComputedAt(r.computed_at)}</td>
+                            <td className="px-3 py-2 text-right">
+                              <button
+                                type="button"
+                                onClick={() => void handleDeleteDlc(r)}
+                                disabled={dlcDeletingId === r.id}
+                                title={`Delete DLC entry #${r.id}`}
+                                aria-label={`Delete DLC entry #${r.id}`}
+                                className="inline-flex size-8 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
+                              >
+                                <Trash2 className={`size-4 ${dlcDeletingId === r.id ? 'animate-pulse' : ''}`} />
+                              </button>
+                            </td>
                           </tr>
                         ))}
                       </tbody>
