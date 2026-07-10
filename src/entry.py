@@ -338,6 +338,31 @@ async def _d1_last_insert_rowid(db: Any, sql: str, *bind_args: Any) -> int | Non
     return int(rowid) if rowid is not None else None
 
 
+async def _sync_qrs_autoincrement(db: Any) -> None:
+    """Point qrs AUTOINCREMENT at MAX(id) so the next insert reuses gaps after deletes.
+
+    SQLite AUTOINCREMENT never decreases ``sqlite_sequence`` on DELETE, so deleting
+    QR 11 would otherwise still yield 12. Syncing to the current max makes the next
+    provisioned id ``MAX(id)+1`` (or 1 when the table is empty).
+    """
+    row = await _d1_first(db, "SELECT COALESCE(MAX(id), 0) AS m FROM qrs")
+    max_id = int(row["m"]) if row and row.get("m") is not None else 0
+    if max_id <= 0:
+        await _d1_run(db, "DELETE FROM sqlite_sequence WHERE name = 'qrs'")
+        return
+    # Ensure a sequence row exists, then clamp it to the live max id.
+    await _d1_run(
+        db,
+        "INSERT OR IGNORE INTO sqlite_sequence (name, seq) VALUES ('qrs', ?)",
+        max_id,
+    )
+    await _d1_run(
+        db,
+        "UPDATE sqlite_sequence SET seq = ? WHERE name = 'qrs'",
+        max_id,
+    )
+
+
 class Default(WorkerEntrypoint):
     async def fetch(self, request):  # type: ignore[override]
         url = str(request.url)
@@ -524,6 +549,9 @@ class Default(WorkerEntrypoint):
         base = _public_base_from_request(request, self.env)
         now = int(time.time())
         items: list[dict[str, Any]] = []
+
+        # Reclaim ids freed by deletes (AUTOINCREMENT alone never goes backwards).
+        await _sync_qrs_autoincrement(self.env.DB)
 
         for _ in range(count):
             placeholder_text = build_prefilled_text(greeting, context_text, request_text, "0")
@@ -1303,6 +1331,8 @@ class Default(WorkerEntrypoint):
         changes = await _d1_run_changes(self.env.DB, "DELETE FROM qrs WHERE id = ?", qr_id)
         if changes < 1:
             return _json_response({"error": "QR not found", "deleted": False, "id": qr_id}, status=404)
+        # So the next provisioned QR reuses this id when it was the highest.
+        await _sync_qrs_autoincrement(self.env.DB)
         return _json_response({"deleted": True, "id": qr_id})
 
     async def _handle_api_leads_delete(self, path: str) -> Response:
