@@ -71,7 +71,7 @@ DLC_WEEK_TZ_OFFSET_MINUTES = "330"
 
 R2_PUBLIC_BASE = "https://pub-d64bbf1d4002461d905fdb95ed882f17.r2.dev"
 
-WHATSAPP_BUSINESS_PHONE = "916309096262"
+WHATSAPP_BUSINESS_PHONE = "918179337052"
 # WHATSAPP_OUTBOUND_URL = "https://api.sews.ai/message/v1/client/message/send"
 # WHATSAPP_OUTBOUND_API_BASE = "https://api.sews.ai"
 # WHATSAPP_OUTBOUND_PATH = "/message/v1/client/message/send"
