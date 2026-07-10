@@ -162,6 +162,27 @@ export async function createDriver(form: FormData): Promise<{ id: number }> {
   return { id: data.id };
 }
 
+async function deleteById(path: string): Promise<{ deleted: boolean; id: number }> {
+  const res = await fetch(apiUrl(path), { method: 'DELETE' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(typeof data.error === 'string' ? data.error : `Request failed (${res.status})`);
+  }
+  return { deleted: Boolean(data.deleted), id: Number(data.id) };
+}
+
+export function deleteQr(id: number): Promise<{ deleted: boolean; id: number }> {
+  return deleteById(`/api/qrs/${id}`);
+}
+
+export function deleteLead(id: number): Promise<{ deleted: boolean; id: number }> {
+  return deleteById(`/api/leads/${id}`);
+}
+
+export function deleteDriver(id: number): Promise<{ deleted: boolean; id: number }> {
+  return deleteById(`/api/drivers/${id}`);
+}
+
 export async function listWeeks(params: {
   limit?: number;
   offset?: number;

@@ -6,7 +6,7 @@ import { LeadFilters } from '../components/LeadFilters';
 import { LeadTable, Lead } from '../components/LeadTable';
 import { Pagination } from '../components/Pagination';
 import { useLayoutActions } from '../components/LayoutActionsContext';
-import { listLeads } from '../lib/adminApi';
+import { listLeads, deleteLead } from '../lib/adminApi';
 
 const PAGE_SIZE = 25;
 
@@ -19,6 +19,8 @@ export function LeadsPage() {
   const [itemsPerPage, setItemsPerPage] = useState(PAGE_SIZE);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [reloadTick, setReloadTick] = useState(0);
 
   const [filters, setFilters] = useState({
     name: '',
@@ -82,9 +84,23 @@ export function LeadsPage() {
       });
 
     return () => { cancelled = true; };
-  }, [offset, itemsPerPage, filters.refId, filters.contact, filters.startDate, filters.endDate, filters.name]);
+  }, [offset, itemsPerPage, filters.refId, filters.contact, filters.startDate, filters.endDate, filters.name, reloadTick]);
 
   const totalPages = Math.ceil(total / itemsPerPage);
+
+  const handleDeleteLead = useCallback(async (id: string) => {
+    if (!window.confirm('Delete this lead? This cannot be undone.')) return;
+    setDeletingId(id);
+    setError(null);
+    try {
+      await deleteLead(Number(id));
+      setReloadTick((t) => t + 1);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Delete failed');
+    } finally {
+      setDeletingId(null);
+    }
+  }, []);
 
   const handleExportToExcel = useCallback(() => {
     const exportData = leads.map((lead) => ({
@@ -159,6 +175,8 @@ export function LeadsPage() {
               leads={filteredLeads}
               currentPage={1}
               itemsPerPage={filteredLeads.length || 1}
+              onDelete={handleDeleteLead}
+              deletingId={deletingId}
             />
           )}
         </div>

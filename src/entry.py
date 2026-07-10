@@ -15,11 +15,6 @@ from pyodide.ffi import to_js
 
 from dlc_cron import run_weekly_dlc_for_previous_week
 from dlc_increment import increment_dlc_for_lead
-from coupon import (
-    fetch_coupon_prefix,
-    format_coupon_spaced,
-    generate_coupon_code,
-)
 from integration_meta import integration_document
 from matching import (
     candidate_from_row,
@@ -28,10 +23,7 @@ from matching import (
 )
 from prefill import build_prefilled_text
 from providers import get_provider
-from whatsapp_outbound import outbound_response_api_error
 from scan_sessions_kv import (
-    inbound_fallback_claim,
-    inbound_fallback_release,
     ss_claim_session,
     ss_load_lcs_candidates,
     ss_merge_index_batch,
@@ -221,7 +213,7 @@ def _multipart_file_field(
 
 _CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
     "Access-Control-Max-Age": "86400",
 }
@@ -346,30 +338,6 @@ async def _d1_last_insert_rowid(db: Any, sql: str, *bind_args: Any) -> int | Non
     return int(rowid) if rowid is not None else None
 
 
-_DEFAULT_COUPON_WA_TEMPLATE = """Here's your coupon — use it at checkout:
-
-*{code}*"""
-
-
-async def _allocate_unique_coupon_code(
-    db: Any,
-    prefix: str,
-    random_length: int,
-    *,
-    max_attempts: int = 5,
-) -> str:
-    for _ in range(max_attempts):
-        code = generate_coupon_code(prefix, random_length=random_length)
-        row = await _d1_first(
-            db,
-            "SELECT 1 AS ok FROM leads WHERE coupon_code_sent = ? LIMIT 1",
-            code,
-        )
-        if not row:
-            return code
-    return generate_coupon_code(prefix, random_length=random_length)
-
-
 class Default(WorkerEntrypoint):
     async def fetch(self, request):  # type: ignore[override]
         url = str(request.url)
@@ -387,6 +355,10 @@ class Default(WorkerEntrypoint):
                 return await self._handle_webhook_get(request)
             if method == "POST":
                 return await self._handle_webhook_post(request)
+        if path == "/lead":
+            if method == "POST":
+                return await self._handle_lead_ingest(request)
+            return Response("Method not allowed", status=405)
         if path == "/integration":
             base = _public_base_from_request(request, self.env)
             doc = integration_document(public_base=base)
@@ -416,9 +388,19 @@ class Default(WorkerEntrypoint):
                 return await self._handle_api_qrs_create(request, url)
             return Response("Method not allowed", status=405)
 
+        if path.startswith("/api/qrs/"):
+            if method == "DELETE":
+                return await self._handle_api_qrs_delete(path)
+            return Response("Method not allowed", status=405)
+
         if path == "/api/leads":
             if method == "GET":
                 return await self._handle_api_leads_list(request, url)
+            return Response("Method not allowed", status=405)
+
+        if path.startswith("/api/leads/"):
+            if method == "DELETE":
+                return await self._handle_api_leads_delete(path)
             return Response("Method not allowed", status=405)
 
         if path == "/api/drivers":
@@ -1297,6 +1279,52 @@ class Default(WorkerEntrypoint):
             {"ok": True, "identity_asset_urls": urls, "added": url, "key": key}
         )
 
+    async def _handle_api_qrs_delete(self, path: str) -> Response:
+        rest = path.removeprefix("/api/qrs/").strip("/")
+        try:
+            qr_id = int(rest.split("/")[0])
+        except (ValueError, IndexError):
+            return _json_response({"error": "invalid QR id"}, status=400)
+        # Block deleting a QR that is assigned to a driver: it is that driver's lead-attribution
+        # ref, so dropping it would orphan their leads and commission. Delete the driver first.
+        assigned = await _d1_first(
+            self.env.DB, "SELECT id FROM drivers WHERE qr_ref_id = ? LIMIT 1", qr_id
+        )
+        if assigned:
+            return _json_response(
+                {"error": "QR is assigned to a driver — delete the driver first"},
+                status=409,
+            )
+        changes = await _d1_run_changes(self.env.DB, "DELETE FROM qrs WHERE id = ?", qr_id)
+        if changes < 1:
+            return _json_response({"error": "QR not found", "deleted": False, "id": qr_id}, status=404)
+        return _json_response({"deleted": True, "id": qr_id})
+
+    async def _handle_api_leads_delete(self, path: str) -> Response:
+        rest = path.removeprefix("/api/leads/").strip("/")
+        try:
+            lead_id = int(rest.split("/")[0])
+        except (ValueError, IndexError):
+            return _json_response({"error": "invalid lead id"}, status=400)
+        changes = await _d1_run_changes(self.env.DB, "DELETE FROM leads WHERE id = ?", lead_id)
+        if changes < 1:
+            return _json_response(
+                {"error": "lead not found", "deleted": False, "id": lead_id}, status=404
+            )
+        return _json_response({"deleted": True, "id": lead_id})
+
+    async def _handle_api_drivers_delete(self, driver_id: int) -> Response:
+        # Frees the driver's qr_ref_id back to available refs. R2 assets are left in place
+        # (harmless orphans); the DB row is what drives attribution and the admin listing.
+        changes = await _d1_run_changes(
+            self.env.DB, "DELETE FROM drivers WHERE id = ?", driver_id
+        )
+        if changes < 1:
+            return _json_response(
+                {"error": "driver not found", "deleted": False, "id": driver_id}, status=404
+            )
+        return _json_response({"deleted": True, "id": driver_id})
+
     async def _handle_api_drivers_subpath(
         self, request, method: str, path: str
     ) -> Response:
@@ -1312,6 +1340,8 @@ class Default(WorkerEntrypoint):
         if len(parts) == 1:
             if method == "PATCH":
                 return await self._handle_api_drivers_patch(request, did)
+            if method == "DELETE":
+                return await self._handle_api_drivers_delete(did)
             return Response("Method not allowed", status=405)
 
         if len(parts) == 2 and parts[1] == "qr-image":
@@ -1532,19 +1562,6 @@ class Default(WorkerEntrypoint):
                     message.ack()
                 return
 
-        min_score = _float_env(self.env, "LCS_MIN_SCORE", 0.35)
-        min_gap = _float_env(self.env, "LCS_MIN_GAP", 0.08)
-        tau = _float_env(self.env, "LCS_RECENCY_TAU_MINUTES", 60.0)
-        max_cand = _int_env(self.env, "LCS_MAX_CANDIDATES", 500)
-        require_confidence = _bool_env(self.env, "LCS_REQUIRE_CONFIDENCE", False)
-        tie_break = _str_env(self.env, "LCS_TIE_BREAK", "recent").strip().lower()
-        prefer_recent_scan_on_tie = tie_break not in ("first", "lru", "oldest")
-        fallback_text = _str_env(
-            self.env,
-            "FALLBACK_REPLY_TEXT",
-            "We could not link this message to a campaign. Please scan the QR code again.",
-        )
-
         for message in batch.messages:
             body = message.body
             if hasattr(body, "to_py"):
@@ -1561,231 +1578,179 @@ class Default(WorkerEntrypoint):
                 message.ack()
                 continue
 
-            try:
-                ref = extract_ref_id(text)
-                matched_qr_id: int | None = None
-                matched_session_id: str | None = None
-                method: str | None = None
-
-                if ref:
-                    try:
-                        ref_int = int(ref)
-                    except ValueError:
-                        ref_int = None
-
-                    if ref_int is not None:
-                        row = await _d1_first(
-                            self.env.DB,
-                            "SELECT id FROM qrs WHERE id = ?",
-                            ref_int,
-                        )
-                        if row:
-                            matched_qr_id = int(row["id"])
-                            method = "ref_id"
-
-                if matched_qr_id is None:
-                    raw_rows = await ss_load_lcs_candidates(
-                        self.env.SCAN_KV,
-                        now_ts=now_ts,
-                        max_candidates=max_cand,
-                    )
-                    candidates = [candidate_from_row(r) for r in raw_rows]
-                    match = pick_best_match(
-                        text,
-                        candidates,
-                        now_ts=now_ts,
-                        min_score=min_score,
-                        min_gap=min_gap,
-                        tau_minutes=tau,
-                        require_confidence=require_confidence,
-                        prefer_recent_scan_on_tie=prefer_recent_scan_on_tie,
-                    )
-                    if match:
-                        matched_qr_id = match.qr_id
-                        method = match.method
-                        matched_session_id = match.session_id
-
-                if matched_qr_id is not None and method:
-                    coupon_prefix = fetch_coupon_prefix(self.env)
-                    rand_len = _int_env(self.env, "COUPON_RANDOM_LENGTH", 6)
-                    changes = await _d1_run_changes(
-                        self.env.DB,
-                        """
-                        INSERT OR IGNORE INTO leads (
-                          whatsapp_message_id, from_phone, wa_display_name, ref_id,
-                          match_method, raw_text, created_at
-                        )
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        wa_message_id,
-                        from_phone,
-                        wa_display_name,
-                        matched_qr_id,
-                        method,
-                        text,
-                        now_ts,
-                    )
-                    row = await _d1_first(
-                        self.env.DB,
-                        """
-                        SELECT id, coupon_code_sent FROM leads
-                        WHERE whatsapp_message_id = ?
-                        """,
-                        wa_message_id,
-                    )
-                    if not row:
-                        message.ack()
-                        continue
-                    lead_id = int(row["id"])
-                    if changes > 0:
-                        await increment_dlc_for_lead(
-                            self.env.DB,
-                            self.env,
-                            ref_id=matched_qr_id,
-                            created_at=now_ts,
-                            d1_first=_d1_first,
-                            d1_run=_d1_run,
-                        )
-                    coupon_sent = row.get("coupon_code_sent")
-                    if not coupon_sent:
-                        code = (
-                            await _allocate_unique_coupon_code(
-                                self.env.DB, coupon_prefix, rand_len
-                            )
-                            if lead_id
-                            else ""
-                        )
-                        if code:
-                            tpl = (
-                                _str_env(self.env, "COUPON_WHATSAPP_TEMPLATE", "").strip()
-                                or _DEFAULT_COUPON_WA_TEMPLATE
-                            )
-                            spaced = format_coupon_spaced(code)
-                            sent = await self._send_whatsapp_outbound_text(
-                                from_phone,
-                                tpl.format(code=code, code_spaced=spaced),
-                            )
-                            if not sent:
-                                print(
-                                    "[lead-queue] coupon WhatsApp skipped: build_outbound returned None "
-                                    f"(lead_id={lead_id} wa_message_id={wa_message_id[:20]}…)"
-                                )
-                            if sent:
-                                await _d1_run(
-                                    self.env.DB,
-                                    """
-                                    UPDATE leads SET coupon_code_sent = ?
-                                    WHERE id = ? AND (coupon_code_sent IS NULL OR coupon_code_sent = '')
-                                    """,
-                                    code,
-                                    lead_id,
-                                )
-                    if method == "lcs" and matched_session_id is not None:
-                        await ss_claim_session(
-                            self.env.SCAN_KV, matched_session_id, now_ts
-                        )
-                else:
-                    if not await inbound_fallback_claim(
-                        self.env.SCAN_KV, wa_message_id
-                    ):
-                        message.ack()
-                        continue
-                    try:
-                        sent = await self._send_whatsapp_outbound_text(
-                            from_phone, fallback_text
-                        )
-                        if not sent:
-                            await inbound_fallback_release(
-                                self.env.SCAN_KV, wa_message_id
-                            )
-                    except Exception:
-                        await inbound_fallback_release(
-                            self.env.SCAN_KV, wa_message_id
-                        )
-                        raise
-
-            except Exception:
-                raise
-
+            # Attribution only — records the lead if the text matches a QR. Never sends WhatsApp;
+            # whatsapp-web owns all outbound. Raises on infra error so the queue retries.
+            await self.process_lead(
+                wa_message_id=wa_message_id,
+                from_phone=from_phone,
+                text=text,
+                name=wa_display_name,
+                now_ts=now_ts,
+            )
             message.ack()
 
-    async def _send_whatsapp_outbound_text(self, to_phone: str, body: str) -> bool:
-        """POST outbound text to the configured WhatsApp HTTP API.
+    async def process_lead(
+        self,
+        *,
+        wa_message_id: str,
+        from_phone: str,
+        text: str,
+        name: str | None,
+        now_ts: int,
+    ) -> dict[str, Any]:
+        """Match an inbound message to the QR that produced it and record a lead.
 
-        Returns False when WHATSAPP_OUTBOUND_URL is unset (nothing sent).
-        Raises RuntimeError if the URL is set but required env bindings are missing.
-        Raises on non-OK HTTP so the queue consumer can retry.
+        Attribution only — never sends WhatsApp (whatsapp-web owns all outbound). Matching is
+        ref-id first (``#RefID:<n>`` → ``qrs.id``), then LCS fuzzy over recent scan sessions.
+        The lead insert is idempotent (``INSERT OR IGNORE`` on ``whatsapp_message_id``). Returns
+        ``{matched, ref_id, method, lead_id, created}``. Raises on D1/KV infra errors so the
+        queue consumer can retry.
         """
-        built = get_provider(self.env).build_outbound(self.env, to_phone=to_phone, text=body)
-        if built is None:
-            dbg = str(getattr(self.env, "WHATSAPP_OUTBOUND_DEBUG", "") or "").strip().lower()
-            if dbg in ("1", "true", "yes", "on"):
-                print("[wa-outbound] build_outbound returned None (check WHATSAPP_OUTBOUND_URL / provider)")
-            return False
-        send_url, hdr_map, payload = built
-        from js import fetch  # type: ignore[import-not-found]
+        min_score = _float_env(self.env, "LCS_MIN_SCORE", 0.35)
+        min_gap = _float_env(self.env, "LCS_MIN_GAP", 0.08)
+        tau = _float_env(self.env, "LCS_RECENCY_TAU_MINUTES", 60.0)
+        max_cand = _int_env(self.env, "LCS_MAX_CANDIDATES", 500)
+        require_confidence = _bool_env(self.env, "LCS_REQUIRE_CONFIDENCE", False)
+        tie_break = _str_env(self.env, "LCS_TIE_BREAK", "recent").strip().lower()
+        prefer_recent_scan_on_tie = tie_break not in ("first", "lru", "oldest")
 
-        body_str = payload if isinstance(payload, str) else json.dumps(payload)
-        headers = to_js(hdr_map)
-        resp = await fetch(
-            send_url,
-            to_js(
-                {
-                    "method": "POST",
-                    "headers": headers,
-                    "body": body_str,
-                }
-            ),
-        )
-        ok = bool(getattr(resp, "ok", False))
-        status = int(getattr(resp, "status", 0) or 0)
-        text_fn = getattr(resp, "text", None)
-        resp_text = ""
-        if callable(text_fn):
+        ref = extract_ref_id(text)
+        matched_qr_id: int | None = None
+        matched_session_id: str | None = None
+        method: str | None = None
+
+        if ref:
             try:
-                t = await text_fn()
-                if t is not None:
-                    resp_text = str(t)
-            except Exception:
-                resp_text = ""
+                ref_int: int | None = int(ref)
+            except ValueError:
+                ref_int = None
+            if ref_int is not None:
+                row = await _d1_first(self.env.DB, "SELECT id FROM qrs WHERE id = ?", ref_int)
+                if row:
+                    matched_qr_id = int(row["id"])
+                    method = "ref_id"
 
-        dbg = str(getattr(self.env, "WHATSAPP_OUTBOUND_DEBUG", "") or "").strip().lower()
-        if dbg in ("1", "true", "yes", "on"):
-            suf = to_phone.strip()[-4:] if len(to_phone.strip()) >= 4 else "****"
-            sec = str(getattr(self.env, "WHATSAPP_OUTBOUND_AUTH_SECRET", "") or "").strip()
-            ah = str(getattr(self.env, "WHATSAPP_OUTBOUND_AUTH_HEADER", "") or "").strip()
-            sent_bearer = sec.lower().startswith("bearer ")
-            bp = str(getattr(self.env, "WHATSAPP_OUTBOUND_BEARER_PREFIX", "") or "").strip().lower() in (
-                "1",
-                "true",
-                "yes",
-                "on",
+        if matched_qr_id is None:
+            raw_rows = await ss_load_lcs_candidates(
+                self.env.SCAN_KV, now_ts=now_ts, max_candidates=max_cand
             )
-            print(
-                f"[wa-outbound] POST status={status} ok={ok} to_endswith={suf} "
-                f"out_chars={len(body)} resp_chars={len(resp_text)} "
-                f"auth_header_name={ah!r} secret_len={len(sec)} secret_starts_with_bearer={sent_bearer} "
-                f"bearer_prefix_env={bp} outbound_header_keys={list(hdr_map.keys())}"
+            candidates = [candidate_from_row(r) for r in raw_rows]
+            match = pick_best_match(
+                text,
+                candidates,
+                now_ts=now_ts,
+                min_score=min_score,
+                min_gap=min_gap,
+                tau_minutes=tau,
+                require_confidence=require_confidence,
+                prefer_recent_scan_on_tie=prefer_recent_scan_on_tie,
             )
-            if resp_text:
-                print(f"[wa-outbound] response_prefix={resp_text[:500]!r}")
+            if match:
+                matched_qr_id = match.qr_id
+                method = match.method
+                matched_session_id = match.session_id
 
-        if not ok:
-            detail = resp_text[:500] if resp_text else ""
-            hint = ""
-            if status == 401:
-                sec = str(getattr(self.env, "WHATSAPP_OUTBOUND_AUTH_SECRET", "") or "").strip()
-                if not sec:
-                    hint = " (401: WHATSAPP_OUTBOUND_AUTH_SECRET is empty — set the Worker secret.)"
-                else:
-                    hint = (
-                        " (401: SEWS rejected credentials. Confirm the live API key; try "
-                        "WHATSAPP_OUTBOUND_BEARER_PREFIX=false for raw Authorization value, "
-                        "or WHATSAPP_OUTBOUND_AUTH_HEADER=X-Api-Key with prefix false per SEWS docs.)"
-                    )
-            raise RuntimeError(f"WhatsApp outbound failed: HTTP {status} {detail}{hint}")
+        if matched_qr_id is None or not method:
+            return {
+                "matched": False,
+                "ref_id": None,
+                "method": None,
+                "lead_id": None,
+                "created": False,
+            }
 
-        api_err = outbound_response_api_error(resp_text)
-        if api_err:
-            raise RuntimeError(f"WhatsApp outbound API error: {api_err}")
-        return True
+        changes = await _d1_run_changes(
+            self.env.DB,
+            """
+            INSERT OR IGNORE INTO leads (
+              whatsapp_message_id, from_phone, wa_display_name, ref_id,
+              match_method, raw_text, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            wa_message_id,
+            from_phone,
+            name,
+            matched_qr_id,
+            method,
+            text,
+            now_ts,
+        )
+        row = await _d1_first(
+            self.env.DB,
+            "SELECT id FROM leads WHERE whatsapp_message_id = ?",
+            wa_message_id,
+        )
+        lead_id = int(row["id"]) if row else None
+        created = changes > 0
+        if created and lead_id is not None:
+            await increment_dlc_for_lead(
+                self.env.DB,
+                self.env,
+                ref_id=matched_qr_id,
+                created_at=now_ts,
+                d1_first=_d1_first,
+                d1_run=_d1_run,
+            )
+        if method == "lcs" and matched_session_id is not None:
+            await ss_claim_session(self.env.SCAN_KV, matched_session_id, now_ts)
+
+        return {
+            "matched": True,
+            "ref_id": matched_qr_id,
+            "method": method,
+            "lead_id": lead_id,
+            "created": created,
+        }
+
+    async def _handle_lead_ingest(self, request) -> Response:
+        """Synchronous lead ingest called by whatsapp-web (the sole WhatsApp gateway).
+
+        Body: ``{from_phone, text, name?, wa_message_id?}``. Guarded by the ``x-ingest-key`` header
+        when ``INGEST_SHARED_SECRET`` is configured. Returns 200 with the process_lead result, so a
+        200 means "lead processed" (not "matched" — check the ``matched`` field).
+        """
+        secret = str(getattr(self.env, "INGEST_SHARED_SECRET", "") or "").strip()
+        if secret:
+            provided = (_header_get(request.headers, "x-ingest-key") or "").strip()
+            if provided != secret:
+                return Response(
+                    json.dumps({"error": "unauthorized"}),
+                    status=401,
+                    headers={"content-type": "application/json", **_CORS_HEADERS},
+                )
+
+        try:
+            body_text = await request.text()
+            payload = json.loads(body_text) if body_text else {}
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+
+        from_phone = str(payload.get("from_phone", "")).strip()
+        text = str(payload.get("text", ""))
+        name = str(payload.get("name", "")) or None
+        wa_message_id = str(payload.get("wa_message_id", "")).strip()
+        now_ts = int(time.time())
+        if not wa_message_id:
+            wa_message_id = f"ingest:{from_phone}:{now_ts}"
+
+        if not from_phone:
+            return Response(
+                json.dumps({"error": "from_phone required"}),
+                status=400,
+                headers={"content-type": "application/json", **_CORS_HEADERS},
+            )
+
+        result = await self.process_lead(
+            wa_message_id=wa_message_id,
+            from_phone=from_phone,
+            text=text,
+            name=name,
+            now_ts=now_ts,
+        )
+        return Response(
+            json.dumps(result),
+            headers={"content-type": "application/json", **_CORS_HEADERS},
+        )

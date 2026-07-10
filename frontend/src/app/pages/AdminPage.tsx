@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Plus, RefreshCw, ChevronLeft, ChevronRight, ExternalLink } from 'lucide-react';
+import { Plus, RefreshCw, ChevronLeft, ChevronRight, ExternalLink, Trash2 } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { QrInventoryCard } from '../components/QrInventoryCard';
 import {
@@ -7,6 +7,7 @@ import {
   listQrs,
   createDriver,
   listDrivers,
+  deleteDriver,
   listAvailableRefIds,
   listWeeks,
   listDlc,
@@ -102,6 +103,7 @@ export function AdminPage() {
   const [availableRefIds, setAvailableRefIds] = useState<number[]>([]);
   const [refIdsLoading, setRefIdsLoading] = useState(false);
   const [driverCreateBusy, setDriverCreateBusy] = useState(false);
+  const [driverDeletingId, setDriverDeletingId] = useState<number | null>(null);
   const upiQrFileRef = useRef<HTMLInputElement>(null);
   const identityFileRef = useRef<HTMLInputElement>(null);
 
@@ -276,6 +278,24 @@ export function AdminPage() {
     }
   };
 
+  const handleDeleteDriver = async (d: DriverItem) => {
+    const label = d.driver_code ?? d.driver_id ?? `D${d.id}`;
+    if (!window.confirm(`Delete driver ${label} (${d.name})? This frees ref ${d.qr_ref_id ?? '—'} and cannot be undone.`)) {
+      return;
+    }
+    setDriverDeletingId(d.id);
+    setDriversError(null);
+    try {
+      await deleteDriver(d.id);
+      await loadDrivers();
+      await loadAvailableRefIds();
+    } catch (e) {
+      setDriversError(e instanceof Error ? e.message : 'Delete failed');
+    } finally {
+      setDriverDeletingId(null);
+    }
+  };
+
   const handleRunDlc = async () => {
     setDlcRunBusy(true);
     setDlcRunMsg(null);
@@ -377,7 +397,11 @@ export function AdminPage() {
                 <p className="mt-1 text-sm text-gray-600">Download each QR from the card below.</p>
                 <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                   {recentItems.map((item) => (
-                    <QrInventoryCard key={item.id} item={item} />
+                    <QrInventoryCard
+                      key={item.id}
+                      item={item}
+                      onDeleted={(id) => setRecentItems((prev) => prev.filter((i) => i.id !== id))}
+                    />
                   ))}
                 </div>
               </div>
@@ -425,7 +449,7 @@ export function AdminPage() {
               <>
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                   {libraryItems.map((item) => (
-                    <QrInventoryCard key={item.id} item={item} />
+                    <QrInventoryCard key={item.id} item={item} onDeleted={() => void loadLibrary()} />
                   ))}
                 </div>
                 <div className="flex items-center justify-center gap-2 pt-2">
@@ -569,11 +593,23 @@ export function AdminPage() {
                             <p className="text-sm leading-snug text-gray-800">{d.name}</p>
                             <p className="break-all text-sm leading-snug text-gray-600">{d.phone}</p>
                           </div>
-                          <div className="shrink-0 text-right">
-                            <p className="text-[11px] font-medium text-gray-400">Ref</p>
-                            <p className="font-mono text-lg font-semibold tabular-nums leading-tight text-gray-900">
-                              {d.qr_ref_id ?? '—'}
-                            </p>
+                          <div className="flex shrink-0 flex-col items-end gap-2">
+                            <div className="text-right">
+                              <p className="text-[11px] font-medium text-gray-400">Ref</p>
+                              <p className="font-mono text-lg font-semibold tabular-nums leading-tight text-gray-900">
+                                {d.qr_ref_id ?? '—'}
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => void handleDeleteDriver(d)}
+                              disabled={driverDeletingId === d.id}
+                              aria-label={`Delete driver ${d.driver_code ?? d.driver_id ?? `D${d.id}`}`}
+                              className="inline-flex min-h-9 items-center gap-1.5 rounded-md border border-red-200 px-2.5 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50"
+                            >
+                              <Trash2 className="size-3.5" />
+                              {driverDeletingId === d.id ? 'Deleting…' : 'Delete'}
+                            </button>
                           </div>
                         </div>
                         <div className="divide-y divide-gray-100 px-4 pb-1 pt-0">
@@ -610,6 +646,7 @@ export function AdminPage() {
                           <th className="px-3 py-2">Ref ID</th>
                           <th className="px-3 py-2">UPI QR</th>
                           <th className="px-3 py-2">Identity</th>
+                          <th className="px-3 py-2 text-right">Actions</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-100">
@@ -650,6 +687,18 @@ export function AdminPage() {
                               ) : (
                                 '—'
                               )}
+                            </td>
+                            <td className="px-3 py-2 text-right">
+                              <button
+                                type="button"
+                                onClick={() => void handleDeleteDriver(d)}
+                                disabled={driverDeletingId === d.id}
+                                title={`Delete driver ${d.driver_code ?? d.driver_id ?? `D${d.id}`}`}
+                                aria-label={`Delete driver ${d.driver_code ?? d.driver_id ?? `D${d.id}`}`}
+                                className="inline-flex size-8 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
+                              >
+                                <Trash2 className={`size-4 ${driverDeletingId === d.id ? 'animate-pulse' : ''}`} />
+                              </button>
                             </td>
                           </tr>
                         ))}

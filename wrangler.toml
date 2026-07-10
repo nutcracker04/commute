@@ -53,7 +53,10 @@ LCS_MIN_GAP = "0.08"
 LCS_RECENCY_TAU_MINUTES = "60"
 LCS_MAX_CANDIDATES = "500"
 
-FALLBACK_REPLY_TEXT = "We could not link this message to a campaign. Please scan the QR code again or tell us which event you mean."
+# Retired: whatsapp-web is the sole WhatsApp gateway and owns all outbound. commute records
+# leads only (via POST /lead) and never replies, so the fallback/coupon/outbound vars below are
+# dead. INGEST_SHARED_SECRET (Worker secret, set via `wrangler secret put`) guards POST /lead.
+# FALLBACK_REPLY_TEXT = "We could not link this message to a campaign. Please scan the QR code again or tell us which event you mean."
 PUBLIC_BASE_URL = "https://commute-leads-worker.harshithsai24.workers.dev"
 
 ADMIN_PROVISION_MAX_COUNT = "500"
@@ -62,17 +65,17 @@ ADMIN_AVAILABLE_REFS_MAX_LIMIT = "5000"
 
 DLC_WEEK_TZ_OFFSET_MINUTES = "330"
 
-COUPON_CODE_PREFIX = "SINZA"
-COUPON_RANDOM_LENGTH = "6"
-COUPON_WHATSAPP_TEMPLATE = "Here's your coupon — use it at checkout:\n\n*{code}*"
+# COUPON_CODE_PREFIX = "SINZA"
+# COUPON_RANDOM_LENGTH = "6"
+# COUPON_WHATSAPP_TEMPLATE = "Here's your coupon — use it at checkout:\n\n*{code}*"
 
 R2_PUBLIC_BASE = "https://pub-d64bbf1d4002461d905fdb95ed882f17.r2.dev"
 
 WHATSAPP_BUSINESS_PHONE = "916309096262"
-WHATSAPP_OUTBOUND_URL = "https://api.sews.ai/message/v1/client/message/send"
-WHATSAPP_OUTBOUND_API_BASE = "https://api.sews.ai"
-WHATSAPP_OUTBOUND_PATH = "/message/v1/client/message/send"
-WHATSAPP_OUTBOUND_AUTH_HEADER = "api-key"
-WHATSAPP_OUTBOUND_BEARER_PREFIX = "false"
-WHATSAPP_OUTBOUND_DEBUG = "true"
-WHATSAPP_OUTBOUND_BODY_TEMPLATE = "{\"to\":\"{to}\",\"type\":\"text\",\"text\":{\"body\":\"{text_escaped}\"}}"
+# WHATSAPP_OUTBOUND_URL = "https://api.sews.ai/message/v1/client/message/send"
+# WHATSAPP_OUTBOUND_API_BASE = "https://api.sews.ai"
+# WHATSAPP_OUTBOUND_PATH = "/message/v1/client/message/send"
+# WHATSAPP_OUTBOUND_AUTH_HEADER = "api-key"
+# WHATSAPP_OUTBOUND_BEARER_PREFIX = "false"
+# WHATSAPP_OUTBOUND_DEBUG = "true"
+# WHATSAPP_OUTBOUND_BODY_TEMPLATE = "{\"to\":\"{to}\",\"type\":\"text\",\"text\":{\"body\":\"{text_escaped}\"}}"

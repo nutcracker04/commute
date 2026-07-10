@@ -1,4 +1,5 @@
 import { format } from 'date-fns';
+import { Trash2 } from 'lucide-react';
 
 export interface Lead {
   id: string;
@@ -13,9 +14,12 @@ interface LeadTableProps {
   leads: Lead[];
   currentPage: number;
   itemsPerPage: number;
+  /** When provided, a delete button is shown per row; called with the lead id. */
+  onDelete?: (id: string) => void;
+  deletingId?: string | null;
 }
 
-export function LeadTable({ leads, currentPage, itemsPerPage }: LeadTableProps) {
+export function LeadTable({ leads, currentPage, itemsPerPage, onDelete, deletingId }: LeadTableProps) {
   const startIndex = (currentPage - 1) * itemsPerPage;
   const endIndex = startIndex + itemsPerPage;
   const paginatedLeads = leads.slice(startIndex, endIndex);
@@ -71,6 +75,18 @@ export function LeadTable({ leads, currentPage, itemsPerPage }: LeadTableProps) 
                     {lead.couponCode}
                   </span>
                 ) : null}
+                {onDelete && (
+                  <button
+                    type="button"
+                    onClick={() => onDelete(lead.id)}
+                    disabled={deletingId === lead.id}
+                    aria-label={`Delete lead ${lead.name}`}
+                    className="ml-auto inline-flex min-h-9 items-center gap-1.5 rounded-md border border-red-200 px-2.5 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50"
+                  >
+                    <Trash2 className="size-3.5" />
+                    {deletingId === lead.id ? 'Deleting…' : 'Delete'}
+                  </button>
+                )}
               </div>
             </article>
           ))}
@@ -97,6 +113,11 @@ export function LeadTable({ leads, currentPage, itemsPerPage }: LeadTableProps) 
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                 Coupon
               </th>
+              {onDelete && (
+                <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Actions
+                </th>
+              )}
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200">
@@ -118,6 +139,20 @@ export function LeadTable({ leads, currentPage, itemsPerPage }: LeadTableProps) 
                 <td className="px-6 py-3 whitespace-nowrap text-sm font-mono text-gray-900">
                   {lead.couponCode || '—'}
                 </td>
+                {onDelete && (
+                  <td className="px-6 py-3 whitespace-nowrap text-right text-sm">
+                    <button
+                      type="button"
+                      onClick={() => onDelete(lead.id)}
+                      disabled={deletingId === lead.id}
+                      title={`Delete lead ${lead.name}`}
+                      aria-label={`Delete lead ${lead.name}`}
+                      className="inline-flex size-8 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
+                    >
+                      <Trash2 className={`size-4 ${deletingId === lead.id ? 'animate-pulse' : ''}`} />
+                    </button>
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>
